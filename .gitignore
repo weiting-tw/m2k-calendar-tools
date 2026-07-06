@@ -1,0 +1,18 @@
+# 機密：絕不進版控
+.env
+*.env
+!.env.example
+
+# 產生物
+m2k-board.html
+m2k-board-sample.html
+*.ics
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 其他
+.env.test
+.DS_Store
