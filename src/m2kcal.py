@@ -267,6 +267,7 @@ def _event_rows(events):
             "rrule": _rrule_text(c),
             "url": str(c.get("url")) if c.get("url") else "",
             "status": str(c.get("status")) if c.get("status") else "",
+            "uid": str(c.get("uid")) if c.get("uid") else "",
         })
     rows.sort(key=lambda r: r["start"])
     return rows
@@ -308,9 +309,13 @@ def render_grouped(events):
         if r["organizer"]:
             extra.append("召集:" + r["organizer"])
         if r["atts"]:
-            extra.append(f"與會 {len(r['atts'])} 人")
+            ppl = ", ".join(f"{nm} <{em}>" if nm and nm != em else em
+                            for nm, em, _ in r["atts"])
+            extra.append(f"與會 {len(r['atts'])} 人: {ppl}")
         if extra:
             out.append("       " + " · ".join(extra))
+        if r["uid"]:
+            out.append(f"       id: {r['uid']}")
     return "\n".join(out) if out else "（無事件）"
 
 
@@ -518,8 +523,99 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
     return "\r\n".join(lines) + "\r\n"
 
 
-def put_and_verify(cal, ics, uid, auth=None):
+def _mk_attendee(email):
+    from icalendar.prop import vCalAddress, vText
+    a = vCalAddress("mailto:" + email)
+    a.params["ROLE"] = vText("REQ-PARTICIPANT")
+    a.params["PARTSTAT"] = vText("NEEDS-ACTION")
+    a.params["RSVP"] = vText("TRUE")
+    return a
+
+
+def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
+                     desc=None, add_attendees=None, remove_attendees=None):
+    """純函式：讀入既有事件的 ICS，套用指定變更後回傳新 ICS 文字（None＝不變）。
+    只動有給的欄位，其餘屬性（RRULE、VALARM、X-…）原樣保留；
+    SEQUENCE +1、更新 DTSTAMP/LAST-MODIFIED。"""
+    from icalendar import Calendar as _ICal, Timezone, TimezoneStandard
+    from icalendar.prop import vDatetime, vText
+    ical = _ICal.from_ical(ics_text)
+    evs = [c for c in ical.walk("VEVENT")]
+    if not evs:
+        raise M2KError("這筆事件資料裡沒有 VEVENT，無法修改。")
+    ev = evs[0]
+
+    if title:
+        ev.pop("SUMMARY", None)
+        ev.add("SUMMARY", title)
+    if location:
+        ev.pop("LOCATION", None)
+        ev.add("LOCATION", location)
+    if desc:
+        ev.pop("DESCRIPTION", None)
+        ev.add("DESCRIPTION", desc)
+
+    def _wall(key, t):
+        # 台北牆鐘時間 + TZID 參數（Mail2000 不吃純 UTC/浮動時間，見 build_ics）
+        p = vDatetime(dt.datetime.strptime(_local_wall(t), "%Y%m%dT%H%M%S"))
+        p.params["TZID"] = vText(TZID)
+        ev.pop(key, None)
+        ev[key] = p
+    if start:
+        _wall("DTSTART", start)
+    if end:
+        _wall("DTEND", end)
+    if (start or end) and not list(ical.walk("VTIMEZONE")):
+        tz = Timezone()
+        tz.add("TZID", TZID)
+        std = TimezoneStandard()
+        std.add("DTSTART", dt.datetime(1970, 1, 1))
+        std.add("TZOFFSETFROM", dt.timedelta(hours=8))
+        std.add("TZOFFSETTO", dt.timedelta(hours=8))
+        std.add("TZNAME", "CST")
+        tz.add_component(std)
+        ical.add_component(tz)
+
+    if add_attendees or remove_attendees:
+        cur = ev.get("ATTENDEE")
+        cur = list(cur) if isinstance(cur, list) else ([cur] if cur else [])
+        rm = {e.strip().lower() for e in (remove_attendees or [])}
+        keep = [a for a in cur if str(a).split(":")[-1].lower() not in rm]
+        have = {str(a).split(":")[-1].lower() for a in keep}
+        for e in (add_attendees or []):
+            e = e.strip()
+            if e and e.lower() not in have:
+                keep.append(_mk_attendee(e))
+                have.add(e.lower())
+        ev.pop("ATTENDEE", None)
+        for a in keep:
+            ev.add("ATTENDEE", a)
+
+    try:
+        seq = int(ev.get("SEQUENCE", 0))
+    except Exception:
+        seq = 0
+    ev.pop("SEQUENCE", None)
+    ev.add("SEQUENCE", seq + 1)
+    now = dt.datetime.now(dt.timezone.utc)
+    for k in ("DTSTAMP", "LAST-MODIFIED"):
+        ev.pop(k, None)
+        ev.add(k, now)
+    return ical.to_ical().decode("utf-8")
+
+
+def find_event_by_uid(cal, uid):
+    """依 UID 取回既有事件（uid 見 agenda/list 輸出的 id: 欄位）。"""
+    try:
+        return cal.event_by_uid(uid)
+    except Exception:
+        raise M2KError(f"找不到 id 為 {uid} 的事件。請先用 agenda/list 查出正確的 id。")
+
+
+def put_and_verify(cal, ics, uid, auth=None, put_url=None):
     """PUT 事件到日曆 collection 並 GET 驗證，CLI 與 MCP 共用。
+    put_url 未給時為新建（collection + uid.ics）；更新既有事件時
+    傳入該事件自己的 URL（server 端 href 不一定等於 uid.ics）。
 
     直接 PUT（不走 caldav 套件的條件式 PUT / If-None-Match，那會讓部分
     Mail2000/SabreDAV 後端回 500）。Mail2000 的 PUT 也可能回 500（存檔後的
@@ -527,10 +623,11 @@ def put_and_verify(cal, ics, uid, auth=None):
     回傳 (put_status, parse_ics 結果)；驗證失敗丟 M2KError。"""
     import requests
     url, user, pwd = auth or creds()
-    coll = str(cal.url)
-    if not coll.endswith("/"):
-        coll += "/"
-    put_url = coll + uid + ".ics"
+    if not put_url:
+        coll = str(cal.url)
+        if not coll.endswith("/"):
+            coll += "/"
+        put_url = coll + uid + ".ics"
     r = requests.put(
         put_url, data=ics.encode("utf-8"),
         headers={"Content-Type": "text/calendar; charset=utf-8"},

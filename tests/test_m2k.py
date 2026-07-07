@@ -35,10 +35,10 @@ check("ICS 有頭尾", ics.startswith("BEGIN:VCALENDAR") and ics.rstrip().endswi
 # 2) build_ics: 與會者 + organizer
 ics2 = m2kcal.build_ics("部門會議", s, e,
                         attendees=["user_a@example.com", "user_b@example.com"],
-                        organizer="wilber_chen@gss.com.tw", uid="U2", stamp="Z")
+                        organizer="owner@example.com", uid="U2", stamp="Z")
 check("與會者1寫入", "ATTENDEE" in ics2 and "user_a@example.com" in ics2)
 check("與會者2寫入", "user_b@example.com" in ics2)
-check("ORGANIZER 寫入", "ORGANIZER:mailto:wilber_chen@gss.com.tw" in ics2)
+check("ORGANIZER 寫入", "ORGANIZER:mailto:owner@example.com" in ics2)
 check("與會者數=2", ics2.count("ATTENDEE") == 2)
 
 # 3) parse_when: 多種格式；壞格式丟 M2KError（不能 sys.exit，否則會殺掉 MCP server）
@@ -105,9 +105,9 @@ check("rrule 無值空字串", m2kcal._rrule_text({}) == "")
 mock_html = """
 <table>
 <tr><td>類別</td><td>暱稱</td><td>信箱</td><td>電話</td></tr>
-<tr><td><input type=checkbox></td><td>User A (測試甲)</td><td>user_a@example.com</td><td>10379</td></tr>
+<tr><td><input type=checkbox></td><td>User A (測試甲)</td><td>user_a@example.com</td><td>10001</td></tr>
 <tr><td><input type=checkbox></td><td>User B (測試乙)</td><td>user_b@example.com</td><td></td></tr>
-<tr><td><input type=checkbox></td><td>User C (測試丙)</td><td>user_c@example.com</td><td>10124</td></tr>
+<tr><td><input type=checkbox></td><td>User C (測試丙)</td><td>user_c@example.com</td><td>10003</td></tr>
 </table>
 """
 p = m2kgroup.MemberParser()
@@ -118,5 +118,36 @@ check("解析出 3 位成員", len(p.rows) == 3)
 check("email 正確", emails == ["user_a@example.com", "user_b@example.com", "user_c@example.com"])
 check("姓名帶出", "User A (測試甲)" in names)
 check("表頭列不被當成員", "信箱" not in "".join(emails))
+
+# 5) update_event_ics: 只動指定欄位、其餘保留；SEQUENCE +1
+src_ics = m2kcal.build_ics("原標題", s, e, location="3F",
+                           attendees=["user_a@example.com", "user_b@example.com"],
+                           organizer="owner@example.com", uid="U9", stamp="20260701T000000Z")
+u1 = m2kcal.update_event_ics(src_ics, title="新標題",
+                             add_attendees=["user_c@example.com", "USER_A@example.com"],  # 大小寫重複不加
+                             remove_attendees=["user_b@example.com"]
+                             ).replace("\r\n ", "")  # unfold，長行折行會切斷 email
+check("update 換標題", "SUMMARY:新標題" in u1 and "SUMMARY:原標題" not in u1)
+check("update 加與會者", "user_c@example.com" in u1)
+check("update 移除與會者", "user_b@example.com" not in u1)
+check("update 重複與會者不加", u1.count("user_a@example.com") == 1)
+check("update 保留 UID/ORGANIZER", "UID:U9" in u1 and "owner@example.com" in u1)
+check("update 保留未動欄位", "LOCATION:3F" in u1)
+check("update SEQUENCE+1", "SEQUENCE:1" in u1)
+u2 = m2kcal.update_event_ics(src_ics, start=dt.datetime(2026, 7, 11, 9, 0),
+                             end=dt.datetime(2026, 7, 11, 10, 0)).replace("\r\n ", "")
+check("update 改時間帶 TZID", "DTSTART;TZID=Asia/Taipei:20260711T090000" in u2
+      and "DTEND;TZID=Asia/Taipei:20260711T100000" in u2)
+check("update 保留 VTIMEZONE", u2.count("BEGIN:VTIMEZONE") == 1)
+# 來源沒有 VTIMEZONE 時，改時間要自動補上（Mail2000 不吃浮動時間）
+bare = src_ics.replace("BEGIN:VTIMEZONE", "BEGIN:X-NOPE").replace("END:VTIMEZONE", "END:X-NOPE")
+u3 = m2kcal.update_event_ics(bare, start=dt.datetime(2026, 7, 11, 9, 0))
+check("update 自動補 VTIMEZONE", "BEGIN:VTIMEZONE" in u3 and "TZID:Asia/Taipei" in u3)
+try:
+    m2kcal.update_event_ics("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", title="x")
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("update 無 VEVENT 丟 M2KError", _r)
 
 print("\n全部通過 ✅")

@@ -73,7 +73,7 @@ export M2K_USER="wilber_chen@gss.com.tw"
 export M2K_PASS="應用程式專用密碼"     # 因 SAML，需在信箱設定產生 App 密碼
 python3 src/m2kcal.py agenda --days 7
 python3 src/m2kcal.py book --title "週會" --start "2026-07-10 14:00" --end "2026-07-10 15:00" \
-    --attendee user_a@example.com --attendee user_b@example.com
+    --attendee user_a@gss.com.tw --attendee user_b@gss.com.tw
 ```
 
 > 注意：CalDAV 無排程功能，`--attendee` 只寫入事件、不會自動寄邀請。要通知請用使用者腳本的原生流程。
@@ -92,7 +92,8 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 ## 四、MCP server（讓 Claude 直接查行程 / 建會議）
 
-`src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`。
+`src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`、`update_event`
+（修改既有會議的標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位）。
 
 ```bash
 pip install "mcp[cli]" caldav icalendar requests

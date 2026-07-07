@@ -157,7 +157,47 @@ def book(title: str, start: str, end: str = "", location: str = "",
     return "\n".join(lines)
 
 
-TOOLS = (list_calendars, agenda, list_events, book)
+def update_event(uid: str, title: str = "", start: str = "", end: str = "",
+                 location: str = "", description: str = "",
+                 add_attendees: list[str] | None = None,
+                 remove_attendees: list[str] | None = None,
+                 ctx: Context = None) -> str:
+    """修改既有會議。uid 取自 agenda / list_events 輸出的「id:」欄位。
+    只更新有給的欄位：title 標題；start/end 時間 'YYYY-MM-DD HH:MM'；
+    location 地點；description 描述；add_attendees / remove_attendees
+    增減與會者 email 清單（其餘與會者保留）。
+    註：CalDAV 無排程，異動不會自動寄通知信給與會者。
+    """
+    if not any([title, start, end, location, description,
+                add_attendees, remove_attendees]):
+        return "錯誤：沒有任何要修改的欄位。"
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+        cal = _cal(auth)
+        ev = m2kcal.find_event_by_uid(cal, uid)
+        ics = m2kcal.update_event_ics(
+            ev.data, title=title or None,
+            start=m2kcal.parse_when(start) if start else None,
+            end=m2kcal.parse_when(end) if end else None,
+            location=location or None, desc=description or None,
+            add_attendees=add_attendees, remove_attendees=remove_attendees)
+        put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth,
+                                                 put_url=str(ev.url))
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    lines = ["已更新並驗證：",
+             f"  標題: {info.get('SUMMARY', '?')}",
+             f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
+    if put_status not in (200, 201, 204):
+        lines.append(f"  （伺服器 PUT 回 {put_status}，但已驗證異動確實寫入）")
+    if info.get("location"):
+        lines.append(f"  地點: {info['location']}")
+    if info.get("attendees"):
+        lines.append("  與會者: " + ", ".join(info["attendees"]))
+    return "\n".join(lines)
+
+
+TOOLS = (list_calendars, agenda, list_events, book, update_event)
 
 
 def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
