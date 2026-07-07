@@ -17,7 +17,7 @@ Claude Desktop 設定（claude_desktop_config.json）:
   "mcpServers": {
     "m2k-calendar": {
       "command": "python3",
-      "args": ["/絕對路徑/m2k_mcp_server.py"],
+      "args": ["/絕對路徑/src/m2k_mcp_server.py"],
       "env": {
         "M2K_USER": "you@example.com",
         "M2K_PASS": "應用程式專用密碼"
@@ -25,7 +25,7 @@ Claude Desktop 設定（claude_desktop_config.json）:
     }
   }
 }
-執行測試：python3 m2k_mcp_server.py   （stdio 模式，等待 MCP 用戶端連入）
+執行測試：python3 src/m2k_mcp_server.py   （stdio 模式，等待 MCP 用戶端連入）
 """
 import os
 import sys
@@ -37,7 +37,6 @@ try:
 except ImportError:
     sys.exit('需要 mcp 套件：pip install "mcp[cli]"')
 
-import requests
 import m2kcal  # 重用既有 CalDAV / ICS 邏輯
 
 m2kcal.load_dotenv()
@@ -49,31 +48,44 @@ def _cal():
     return m2kcal.pick_calendar(p)
 
 
+# 注意：工具內一律 catch M2KError 回傳錯誤字串。
+# m2kcal 遇可預期錯誤丟 M2KError（不再 sys.exit），MCP server 才不會整個被殺掉。
+
+
 @mcp.tool()
 def list_calendars() -> str:
     """列出你在 CalDAV 可存取的行事曆名稱。"""
-    p = m2kcal.connect()
-    return "\n".join("- " + m2kcal.cal_name(c) for c in p.calendars()) or "（無）"
+    try:
+        p = m2kcal.connect()
+        return "\n".join("- " + m2kcal.cal_name(c) for c in p.calendars()) or "（無）"
+    except m2kcal.M2KError as e:
+        return f"錯誤：{e}"
 
 
 @mcp.tool()
 def agenda(days: int = 7) -> str:
     """看未來 N 天的行程（依天分組）。days 預設 7。"""
-    cal = _cal()
-    start = dt.datetime.now()
-    end = start + dt.timedelta(days=days)
-    events = cal.search(start=start, end=end, event=True, expand=True)
-    return f"未來 {days} 天，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
+    try:
+        cal = _cal()
+        start = dt.datetime.now()
+        end = start + dt.timedelta(days=days)
+        events = cal.search(start=start, end=end, event=True, expand=True)
+        return f"未來 {days} 天，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
+    except m2kcal.M2KError as e:
+        return f"錯誤：{e}"
 
 
 @mcp.tool()
 def list_events(start: str, end: str) -> str:
     """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。"""
-    cal = _cal()
-    s = m2kcal.parse_when(start)
-    e = m2kcal.parse_when(end)
-    events = cal.search(start=s, end=e, event=True, expand=True)
-    return f"{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
+    try:
+        cal = _cal()
+        s = m2kcal.parse_when(start)
+        e = m2kcal.parse_when(end)
+        events = cal.search(start=s, end=e, event=True, expand=True)
+        return f"{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
+    except m2kcal.M2KError as e:
+        return f"錯誤：{e}"
 
 
 @mcp.tool()
@@ -84,28 +96,22 @@ def book(title: str, start: str, end: str = "", location: str = "",
     location 地點；description 描述；attendees 與會者 email 清單。
     註：CalDAV 無排程，attendees 只記錄不自動寄邀請。
     """
-    cal = _cal()
-    url, user, pwd = m2kcal.creds()
-    s = m2kcal.parse_when(start)
-    e = m2kcal.parse_when(end) if end else s + dt.timedelta(hours=1)
-    uid = str(uuid.uuid4())
-    ics = m2kcal.build_ics(title, s, e, location, description,
-                           attendees=attendees, organizer=user, uid=uid)
-    coll = str(cal.url)
-    if not coll.endswith("/"):
-        coll += "/"
-    put_url = coll + uid + ".ics"
-    requests.put(put_url, data=ics.encode("utf-8"),
-                 headers={"Content-Type": "text/calendar; charset=utf-8"},
-                 auth=(user, pwd), timeout=30)
-    # Mail2000 PUT 可能回 500 但已建立 → 用 GET 驗證
-    g = requests.get(put_url, auth=(user, pwd), timeout=30)
-    if not (g.status_code == 200 and uid in g.text):
-        return f"建立失敗（GET 驗證 HTTP {g.status_code}）。"
-    info = m2kcal.parse_ics(g.text)
+    try:
+        cal = _cal()
+        url, user, pwd = m2kcal.creds()
+        s = m2kcal.parse_when(start)
+        e = m2kcal.parse_when(end) if end else s + dt.timedelta(hours=1)
+        uid = str(uuid.uuid4())
+        ics = m2kcal.build_ics(title, s, e, location, description,
+                               attendees=attendees, organizer=user, uid=uid)
+        put_status, info = m2kcal.put_and_verify(cal, ics, uid)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
     lines = ["已建立並驗證：",
              f"  標題: {info.get('SUMMARY', title)}",
              f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
+    if put_status not in (200, 201, 204):
+        lines.append(f"  （伺服器 PUT 回 {put_status}，但已驗證事件確實建立）")
     if info.get("location"):
         lines.append(f"  地點: {info['location']}")
     if info.get("attendees"):

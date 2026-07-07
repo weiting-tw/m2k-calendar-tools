@@ -19,10 +19,10 @@ m2kcal — Mail2000 (m2k) 行事曆 CLI
   或不設 M2K_PASS，執行時會安全地互動輸入 (getpass)。
 
 使用範例:
-  python3 m2kcal.py cals                       # 列出你有哪些日曆
-  python3 m2kcal.py agenda --days 7            # 未來 7 天的會議
-  python3 m2kcal.py list --start 2026-07-01 --end 2026-07-31
-  python3 m2kcal.py book --title "專案週會" \
+  python3 src/m2kcal.py cals                       # 列出你有哪些日曆
+  python3 src/m2kcal.py agenda --days 7            # 未來 7 天的會議
+  python3 src/m2kcal.py list --start 2026-07-01 --end 2026-07-31
+  python3 src/m2kcal.py book --title "專案週會" \
       --start "2026-07-08 14:00" --end "2026-07-08 15:00" \
       --location "3F 會議室" --desc "討論進度"
 """
@@ -39,22 +39,28 @@ TW_TZ = dt.timezone(dt.timedelta(hours=8))  # Asia/Taipei
 
 try:
     import caldav
-    from caldav.elements import dav
 except ImportError:
     sys.exit("需要 caldav 套件，請先執行:  pip install caldav icalendar")
 
 DEFAULT_URL = "https://mail.gss.com.tw/cgi-bin/cal/caldav/"
 
 
+class M2KError(Exception):
+    """可預期的操作錯誤（認證/參數/找不到資源）。
+    CLI 端 catch 後印出離開；MCP 端 catch 後回傳錯誤字串，避免整個 server 被殺掉。"""
+
+
 # ---------- .env 載入（不需額外套件）----------
 def load_dotenv(path=None):
     """讀取 .env（KEY=VALUE，每行一組），寫入 os.environ（不覆蓋既有的）。
-    找尋順序：指定路徑 → 目前工作目錄 → 本程式所在目錄。"""
+    找尋順序：指定路徑 → 目前工作目錄 → 本程式所在目錄 → 專案根目錄（src 的上層）。"""
     candidates = []
     if path:
         candidates.append(path)
+    here = os.path.dirname(os.path.abspath(__file__))
     candidates.append(os.path.join(os.getcwd(), ".env"))
-    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    candidates.append(os.path.join(here, ".env"))
+    candidates.append(os.path.join(os.path.dirname(here), ".env"))
     for p in candidates:
         if not os.path.isfile(p):
             continue
@@ -94,7 +100,7 @@ def connect():
     try:
         principal = client.principal()
     except Exception as e:
-        sys.exit(f"登入失敗，請確認帳號密碼與 CalDAV 是否啟用: {e}")
+        raise M2KError(f"登入失敗，請確認帳號密碼與 CalDAV 是否啟用: {e}")
     return principal
 
 
@@ -112,13 +118,13 @@ def cal_name(c):
 def pick_calendar(principal, name=None):
     cals = principal.calendars()
     if not cals:
-        sys.exit("找不到任何日曆。")
+        raise M2KError("找不到任何日曆。")
     if name:
         for c in cals:
             if (cal_name(c) or "").strip() == name:
                 return c
-        sys.exit(f"找不到名為 '{name}' 的日曆。可用: " +
-                 ", ".join(str(cal_name(c)) for c in cals))
+        raise M2KError(f"找不到名為 '{name}' 的日曆。可用: " +
+                       ", ".join(str(cal_name(c)) for c in cals))
     return cals[0]  # 預設第一本 (通常是主日曆)
 
 
@@ -129,7 +135,7 @@ def parse_when(s):
             return dt.datetime.strptime(s, fmt)
         except ValueError:
             continue
-    sys.exit(f"時間格式看不懂: {s} (請用 'YYYY-MM-DD HH:MM' 或 'YYYY-MM-DD')")
+    raise M2KError(f"時間格式看不懂: {s} (請用 'YYYY-MM-DD HH:MM' 或 'YYYY-MM-DD')")
 
 
 def _fmt_dt_line(line):
@@ -383,23 +389,6 @@ def render_board_html(events, title):
 <body><h1>{_esc(title)}</h1><div class="board">{board}</div></body></html>"""
 
 
-def fmt_event(ev):
-    try:
-        comp = ev.icalendar_component
-        summary = str(comp.get("summary", "(無標題)"))
-        start = comp.get("dtstart")
-        end = comp.get("dtend")
-        loc = comp.get("location")
-        s = start.dt if start else "?"
-        e = end.dt if end else "?"
-        line = f"  • {s}  →  {e}  {summary}"
-        if loc:
-            line += f"  @ {loc}"
-        return line
-    except Exception:
-        return f"  • {ev}"
-
-
 # ---------- 指令 ----------
 def cmd_cals(args):
     p = connect()
@@ -512,6 +501,33 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
     return "\r\n".join(lines) + "\r\n"
 
 
+def put_and_verify(cal, ics, uid):
+    """PUT 事件到日曆 collection 並 GET 驗證，CLI 與 MCP 共用。
+
+    直接 PUT（不走 caldav 套件的條件式 PUT / If-None-Match，那會讓部分
+    Mail2000/SabreDAV 後端回 500）。Mail2000 的 PUT 也可能回 500（存檔後的
+    通知步驟出錯）但事件其實已寫入，因此不看 PUT status，以 GET 驗證為準。
+    回傳 (put_status, parse_ics 結果)；驗證失敗丟 M2KError。"""
+    import requests
+    url, user, pwd = creds()
+    coll = str(cal.url)
+    if not coll.endswith("/"):
+        coll += "/"
+    put_url = coll + uid + ".ics"
+    r = requests.put(
+        put_url, data=ics.encode("utf-8"),
+        headers={"Content-Type": "text/calendar; charset=utf-8"},
+        auth=(user, pwd), timeout=30,
+    )
+    g = requests.get(put_url, auth=(user, pwd), timeout=30)
+    if not (g.status_code == 200 and uid in g.text):
+        msg = f"建立失敗：PUT HTTP {r.status_code}、驗證 GET HTTP {g.status_code}"
+        if r.text:
+            msg += "\n伺服器回應：" + r.text[:500]
+        raise M2KError(msg)
+    return r.status_code, parse_ics(g.text)
+
+
 def cmd_diag(args):
     """診斷：印出日曆 collection 網址、你的權限、支援的元件、PUT 測試。"""
     import requests
@@ -550,43 +566,23 @@ def cmd_raw(args):
 
 
 def cmd_book(args):
-    import requests
     p = connect()
     cal = pick_calendar(p, args.calendar)
     start = parse_when(args.start)
     end = parse_when(args.end) if args.end else start + dt.timedelta(hours=1)
     url, user, pwd = creds()
-    me = user
     uid = str(uuid.uuid4())
     ics = build_ics(args.title, start, end, args.location, args.desc,
-                    attendees=args.attendee, organizer=me, uid=uid)
-
-    # 直接 PUT 到日曆 collection（不走 caldav 套件的條件式 PUT / If-None-Match，
-    # 那會讓部分 Mail2000/SabreDAV 後端回 500）。
-    coll = str(cal.url)
-    if not coll.endswith("/"):
-        coll += "/"
-    put_url = coll + uid + ".ics"
-    r = requests.put(
-        put_url, data=ics.encode("utf-8"),
-        headers={"Content-Type": "text/calendar; charset=utf-8"},
-        auth=(user, pwd), timeout=30,
-    )
-
-    # Mail2000/SabreDAV 有時 PUT 回 500（存檔後的通知步驟出錯），但事件其實已寫入。
-    # 因此不看 status，改用 GET 回來確認實際是否存在＋內容正確。
-    g = requests.get(put_url, auth=(user, pwd), timeout=30)
-    created = (g.status_code == 200 and uid in g.text)
-    if not created:
-        print(f"建立失敗：PUT HTTP {r.status_code}、驗證 GET HTTP {g.status_code}")
-        if r.text:
-            print("伺服器回應：", r.text[:500])
+                    attendees=args.attendee, organizer=user, uid=uid)
+    try:
+        put_status, info = put_and_verify(cal, ics, uid)
+    except M2KError as e:
+        print(e)
         print("\n--- 送出的 ICS ---\n" + ics)
         sys.exit(1)
 
-    info = parse_ics(g.text)
-    if r.status_code not in (200, 201, 204):
-        print(f"（伺服器 PUT 回 {r.status_code}，但已驗證事件確實建立）")
+    if put_status not in (200, 201, 204):
+        print(f"（伺服器 PUT 回 {put_status}，但已驗證事件確實建立）")
     print("已建立並驗證：")
     print(f"  標題: {info.get('SUMMARY', args.title)}")
     print(f"  時間: {info.get('start','?')}  →  {info.get('end','?')}")
@@ -594,11 +590,6 @@ def cmd_book(args):
         print(f"  地點: {info['location']}")
     if info.get("attendees"):
         print("  與會者: " + ", ".join(info["attendees"]))
-    print(f"  {start}  →  {end}")
-    if args.location:
-        print(f"  地點: {args.location}")
-    if args.attendee:
-        print("  與會者: " + ", ".join(args.attendee))
         print("  (提醒：此站台無 CalDAV 排程，系統不會自動寄邀請信；"
               "與會者只記錄在事件中)")
 
@@ -649,7 +640,10 @@ def main():
 
     args = ap.parse_args()
     load_dotenv()  # 若同目錄有 .env 會自動載入
-    args.func(args)
+    try:
+        args.func(args)
+    except M2KError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
