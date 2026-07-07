@@ -127,7 +127,28 @@ claude mcp add m2k-calendar \
 - 憑證也可放專案根目錄 `.env`（server 啟動時自動載入），就不必寫進設定檔。
 - 可預期錯誤（帳密錯、時間格式錯）會以「錯誤：...」回覆 Claude，server 不會中斷。
 - 範圍：只能查**自己的**日曆與建立會議；看他人行事曆請用使用者腳本（SAML session 限制）。
-- 目前是 **stdio 傳輸、單人本機執行**。要多人共用需改 HTTP 傳輸並解決各自的 CalDAV 認證（每人自帶應用程式密碼），詳見 PROGRESS.md 待辦。
+
+### 公用部署（HTTP 模式，多人共用）
+
+在內網主機啟動（**伺服器不保存任何帳密**）：
+
+```bash
+python3 src/m2k_mcp_server.py --http --host 0.0.0.0 --port 8763
+```
+
+每位使用者帶**自己的**應用程式專用密碼連入；伺服器逐請求把憑證
+pass-through 給 CalDAV：
+
+```bash
+claude mcp add --transport http m2k-calendar https://主機:8763/mcp \
+  --header "Authorization: Basic $(printf '%s' '帳號@gss.com.tw:應用程式專用密碼' | base64)"
+```
+
+安全須知：
+- **必須放在 HTTPS 反向代理後**（nginx / caddy）——Basic 標頭在純 HTTP 下等同明文傳帳密。
+- HTTP 模式**絕不回退**到環境變數憑證；沒帶或帶錯 `Authorization` 一律回錯誤，不會冒用部署者身分。
+- 撤銷存取＝使用者自己到 webmail 撤銷該應用程式專用密碼，伺服器端無需任何操作。
+- stdio 模式（上方本機設定）行為不變，兩種模式可並存。
 
 ## 五、Skill（skill/SKILL.md）
 

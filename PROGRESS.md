@@ -68,8 +68,9 @@ webmail 使用者腳本做群組排會議與多人看板。
 - [x] 把 CalDAV 查詢/book 包成 **MCP**(`m2k_mcp_server.py`)。
 - [x] 產出 **Skill**(`skill/SKILL.md`)。
 - [ ] （選）腳本內靜音 GIL 警告，免每次加 `PYTHON_GIL=0`。
-- [ ] 評估 MCP 公用化：改 streamable-http 傳輸、部署在內網主機，認證採「每請求帶各自的
-      應用程式專用密碼（Basic over HTTPS，pass-through 到 CalDAV）」，避免集中保管他人憑證。
+- [x] MCP 公用化：`--http` 啟動 streamable-http，認證採「每請求帶各自的應用程式專用密碼
+      （Basic over HTTPS，pass-through 到 CalDAV）」，伺服器不保存憑證；stdio 模式並存。
+      已實測：stdio 與 HTTP 兩模式工具呼叫、無/壞 Authorization 拒絕、假憑證轉拋 CalDAV 401。
 
 ## 打包方式
 可以直接打包。deliverable 為 `src/`、`tests/`、`userscripts/`、`docs/`、`skill/`
