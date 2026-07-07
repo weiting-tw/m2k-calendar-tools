@@ -168,6 +168,21 @@ python3 src/m2k_mcp_server.py --oauth --issuer https://對外網址 --host 0.0.0
   → 依畫面完成授權登入。
 - 前置需求：**公網可達的 HTTPS 網址**（claude.ai 的連線來自 Anthropic 雲端，不是你的裝置）；
   行程內容會經過 Anthropic 伺服器，部署前請先確認公司資料政策。
+- 防護：`/login` 同一授權交易密碼連錯 5 次即作廢；登入頁帶 `X-Frame-Options: DENY`、
+  CSP、`Cache-Control: no-store`。redirect_uri 由 mcp SDK 對註冊清單完全比對。
+
+### Docker 部署（HTTP / OAuth 模式）
+
+```bash
+docker build -t m2k-calendar .
+# HTTP 模式（Basic pass-through）
+docker run -d -p 8763:8763 m2k-calendar
+# OAuth 模式（掛 volume 保留金鑰與 client 註冊；換金鑰＝全部 token 失效）
+docker run -d -p 8763:8763 -v m2k-data:/data m2k-calendar \
+  --oauth --issuer https://對外網址 --host 0.0.0.0 --port 8763
+```
+
+容器以非 root 執行；stdio 本機模式不需要 Docker。HTTPS 一樣由前面的反向代理處理。
 
 ## 五、Skill（skill/SKILL.md）
 

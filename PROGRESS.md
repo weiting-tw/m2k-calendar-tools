@@ -13,6 +13,13 @@
   CalDAV ＋ 無狀態 AES-GCM 加密 token（伺服器不存憑證），供 claude.ai Connectors（手機/網頁）
   使用。已實測：metadata/註冊/authorize 轉導/登入頁/假憑證拒絕/無 token 401/Bearer 全鏈路。
   另確認 `mail.gss.com.tw` 為公網可達（219.87.91.68），部署只需公網 HTTPS 主機。
+- 安全 review（Gemini）後補強：/login 同交易連錯 5 次作廢（防暴力猜測）、登入頁安全標頭
+  （X-Frame-Options/CSP/no-store）。「open redirect」為誤報——mcp SDK 已對註冊 redirect_uri
+  完全比對。已知取捨：伺服器金鑰若外洩，未過期 token 內的憑證會曝光 → 金鑰檔 0600、
+  可換金鑰全面撤銷、單人撤銷走撤 app password。
+- 新增 Dockerfile / requirements.txt / .dockerignore 供 HTTP/OAuth 公用部署
+  （本機網路連不上 Docker Hub，build 待部署主機驗證）。
+- 本機 Claude Code 已註冊 stdio MCP（user scope，`claude mcp list` 顯示 Connected）。
 
 ## 專案目標
 把難用的公司 m2k 信箱行事曆（Openfind Mail2000）變好用：CLI 查詢/建立會議、
