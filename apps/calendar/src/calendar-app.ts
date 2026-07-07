@@ -19,7 +19,7 @@ interface Ev {
   location: string; description: string; organizer: string; rrule: string;
   attendees: Attendee[];
 }
-interface CalData { range: { start: string; end: string }; today: string; events: Ev[] }
+interface CalData { range: { start: string; end: string }; today: string; me?: string; events: Ev[] }
 
 const WK = ["日", "一", "二", "三", "四", "五", "六"];
 const HOUR_H = 44;          // 週檢視每小時高度(px)
@@ -309,6 +309,53 @@ function openDetail(ev: Ev) {
       box.append(el("div", "att", `${sym[a.partstat] ?? "·"} ${a.name} <${a.email}>`));
     card.appendChild(box);
   }
+  // 我的出席回覆（只更新自己日曆的狀態，不會通知召集人）
+  const mine = data?.me
+    ? ev.attendees.find((a) => a.email.toLowerCase() === data!.me!.toLowerCase())
+    : undefined;
+  if (mine) {
+    const row = el("div", "rsvp");
+    row.append(el("span", "flab", "我的回覆"));
+    const opts: Array<[string, string, string]> = [
+      ["accept", "ACCEPTED", "✓ 接受"], ["tentative", "TENTATIVE", "? 暫定"],
+      ["decline", "DECLINED", "✗ 拒絕"]];
+    for (const [arg, st, label] of opts) {
+      const b = el("button", "btn" + (mine.partstat === st ? " on" : ""), label) as HTMLButtonElement;
+      b.onclick = async () => {
+        b.disabled = true;
+        const res = await app.callServerTool({ name: "respond_event",
+          arguments: { uid: ev.uid, response: arg } }).catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
+        const txt = firstText(res);
+        if (txt.startsWith("錯誤")) { toast(txt, true); b.disabled = false; return; }
+        toast("已更新出席狀態（不會通知召集人）");
+        card.closest(".ov")?.remove();
+        fetchData();
+      };
+      row.appendChild(b);
+    }
+    card.appendChild(row);
+  }
+  // 快速加入其他與會者
+  {
+    const row = el("div", "rsvp");
+    const inp = el("input") as HTMLInputElement;
+    inp.type = "text"; inp.placeholder = "加入與會者 email（逗號可多位）";
+    const add = el("button", "btn", "加入") as HTMLButtonElement;
+    add.onclick = async () => {
+      const emails = inp.value.split(/[\s,;、]+/).map((x) => x.trim()).filter(Boolean);
+      if (!emails.length) return;
+      add.disabled = true; add.textContent = "處理中…";
+      const res = await app.callServerTool({ name: "update_event",
+        arguments: { uid: ev.uid, add_attendees: emails } }).catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
+      const txt = firstText(res);
+      if (txt.startsWith("錯誤")) { toast(txt, true); add.disabled = false; add.textContent = "加入"; return; }
+      toast("已加入（不會自動寄通知信）");
+      card.closest(".ov")?.remove();
+      fetchData();
+    };
+    row.append(inp, add);
+    card.appendChild(row);
+  }
   if (ev.description) {
     const d = el("div", "desc"); d.textContent = ev.description;
     card.appendChild(d);
@@ -423,10 +470,19 @@ app.onerror = console.error;
 app.onteardown = async () => ({});
 
 app.ontoolinput = (params) => {
-  // show_calendar 的參數決定初始檢視範圍
-  const a = params.arguments as { start?: string; days?: number } | undefined;
-  if (a?.start) anchor = parseDT(a.start);
-  if (a?.days && a.days > 10) view = "month";
+  // 任何行事曆工具（show_calendar/agenda/list_events/book…）的參數決定初始檢視範圍
+  const a = params.arguments as { start?: string; end?: string; days?: number } | undefined;
+  if (a?.start) {
+    const d = parseDT(a.start);
+    if (!isNaN(d.getTime())) anchor = d;
+  }
+  let span = a?.days ?? 0;
+  if (a?.start && a?.end) {
+    const s = parseDT(a.start), e = parseDT(a.end);
+    if (!isNaN(s.getTime()) && !isNaN(e.getTime()))
+      span = Math.round((e.getTime() - s.getTime()) / 86400000);
+  }
+  if (span > 10) view = "month";
   loading = true; render();
 };
 

@@ -94,6 +94,7 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 `src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`、`update_event`
 （修改既有會議的標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位）、
+`respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、
 `show_calendar`（互動行事曆 UI，見下）。
 
 **MCP App 行事曆 UI**：支援 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) 的客戶端
