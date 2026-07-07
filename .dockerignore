@@ -1,0 +1,15 @@
+.git
+.venv
+.omc
+.env
+.env.*
+.bridge-key
+.oauth-clients.json
+__pycache__
+*.pyc
+tests
+docs
+userscripts
+skill
+*.md
+m2k-board*.html
