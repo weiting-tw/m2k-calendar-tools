@@ -104,14 +104,20 @@ async def test_oauth(base, key_b64):
         assert "/login?txn=" in loc, loc
         print("oauth authorize -> redirect", loc[:30], "…")
 
-        # 2) 登入頁可開；假憑證被 CalDAV 驗證擋下
+        # 2) 登入頁可開（含安全標頭）；假憑證被 CalDAV 驗證擋下；連錯 5 次作廢交易
         login = await c.get(base + loc if loc.startswith("/") else loc)
         assert login.status_code == 200 and "應用程式專用密碼" in login.text
+        assert login.headers.get("x-frame-options") == "DENY", login.headers
         txn = loc.split("txn=")[1]
-        bad = await c.post(f"{base}/login",
-                           data={"txn": txn, "user": "fake@example.com", "password": "wrong"})
-        assert bad.status_code == 401 and "驗證失敗" in bad.text, bad.status_code
-        print("oauth login fake-cred -> 401 驗證失敗")
+        for i in range(5):
+            bad = await c.post(f"{base}/login",
+                               data={"txn": txn, "user": "fake@example.com", "password": "wrong"})
+            expect = 401 if i < 4 else 429
+            assert bad.status_code == expect, (i, bad.status_code)
+        assert "嘗試次數過多" in bad.text
+        gone = await c.get(f"{base}/login?txn={txn}")
+        assert gone.status_code == 400, gone.status_code
+        print("oauth login fake-cred -> 401×4、第5次 429 作廢交易")
 
         # 3) 無 token 打 MCP endpoint → HTTP 401（OAuth 模式由 middleware 擋）
         r2 = await c.post(f"{base}/mcp", json={})

@@ -45,6 +45,15 @@ ACCESS_TTL = 3600            # access token 1 小時
 REFRESH_TTL = 30 * 24 * 3600  # refresh token 30 天
 TXN_TTL = 600                # /authorize → /login 完成的時限
 CODE_TTL = 300               # 授權碼時限
+MAX_LOGIN_TRIES = 5          # 同一授權交易的密碼錯誤上限（防透過 /login 暴力猜測）
+
+_SEC_HEADERS = {             # /login 頁安全標頭：防點擊劫持、不快取憑證頁
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                               "form-action 'self'; frame-ancestors 'none'",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_KEY_PATH = os.environ.get("M2K_BRIDGE_KEY_FILE") or os.path.join(ROOT, ".bridge-key")
@@ -130,7 +139,8 @@ class M2KOAuthProvider:
                     self._clients = json.load(f)
             except Exception:
                 self._clients = {}
-        self._pending: dict[str, tuple[str, AuthorizationParams, float]] = {}
+        # txn → {cid, params, exp, tries}；tries 達上限即作廢該授權交易
+        self._pending: dict[str, dict] = {}
         self._codes: dict[str, CredAuthorizationCode] = {}
 
     # --- client 註冊（DCR） ---
@@ -150,12 +160,13 @@ class M2KOAuthProvider:
                         params: AuthorizationParams) -> str:
         self._prune()
         txn = secrets.token_urlsafe(24)
-        self._pending[txn] = (client.client_id, params, time.time() + TXN_TTL)
+        self._pending[txn] = {"cid": client.client_id, "params": params,
+                              "exp": time.time() + TXN_TTL, "tries": 0}
         return "/login?" + urlencode({"txn": txn})
 
     def _prune(self):
         now = time.time()
-        self._pending = {k: v for k, v in self._pending.items() if v[2] > now}
+        self._pending = {k: v for k, v in self._pending.items() if v["exp"] > now}
         self._codes = {k: v for k, v in self._codes.items() if v.expires_at > now}
 
     def _login_html(self, txn: str, error: str = "") -> str:
@@ -182,12 +193,14 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
 撤銷方式：到 webmail 撤銷該應用程式專用密碼。</p>
 </form></body></html>"""
 
+    def _page(self, html: str, status: int = 200) -> HTMLResponse:
+        return HTMLResponse(html, status_code=status, headers=_SEC_HEADERS)
+
     async def login_page(self, request: Request) -> Response:
         txn = request.query_params.get("txn", "")
         if txn not in self._pending:
-            return HTMLResponse(self._login_html("", "此授權連結無效或已過期，請回到用戶端重新連接。"),
-                                status_code=400)
-        return HTMLResponse(self._login_html(txn))
+            return self._page(self._login_html("", "此授權連結無效或已過期，請回到用戶端重新連接。"), 400)
+        return self._page(self._login_html(txn))
 
     async def login_submit(self, request: Request) -> Response:
         form = await request.form()
@@ -195,18 +208,21 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
         user = str(form.get("user", "")).strip()
         pwd = str(form.get("password", ""))
         entry = self._pending.get(txn)
-        if not entry or entry[2] < time.time():
-            return HTMLResponse(self._login_html("", "授權階段已過期，請回到用戶端重新連接。"),
-                                status_code=400)
-        client_id, params, _ = entry
+        if not entry or entry["exp"] < time.time():
+            return self._page(self._login_html("", "授權階段已過期，請回到用戶端重新連接。"), 400)
+        client_id, params = entry["cid"], entry["params"]
 
         # 打一次 CalDAV 驗證憑證（blocking → 丟 worker thread）
         auth = (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), user, pwd)
         try:
             await anyio.to_thread.run_sync(lambda: m2kcal.connect(auth))
         except m2kcal.M2KError:
-            return HTMLResponse(self._login_html(txn, "驗證失敗：帳號或應用程式專用密碼不正確。"),
-                                status_code=401)
+            entry["tries"] += 1
+            if entry["tries"] >= MAX_LOGIN_TRIES:
+                del self._pending[txn]
+                return self._page(self._login_html(
+                    "", "嘗試次數過多，此授權交易已作廢，請回到用戶端重新連接。"), 429)
+            return self._page(self._login_html(txn, "驗證失敗：帳號或應用程式專用密碼不正確。"), 401)
 
         del self._pending[txn]
         code = secrets.token_urlsafe(32)
