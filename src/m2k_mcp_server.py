@@ -181,8 +181,10 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
             end=m2kcal.parse_when(end) if end else None,
             location=location or None, desc=description or None,
             add_attendees=add_attendees, remove_attendees=remove_attendees)
+        new_seq = m2kcal.parse_ics(ics).get("SEQUENCE")
         put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth,
-                                                 put_url=str(ev.url))
+                                                 put_url=str(ev.url),
+                                                 expect_seq=new_seq)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     lines = ["已更新並驗證：",
