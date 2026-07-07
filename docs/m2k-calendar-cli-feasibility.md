@@ -138,10 +138,10 @@ Allow: OPTIONS, GET, HEAD, DELETE, PROPFIND, PUT, PROPPATCH, COPY, MOVE, REPORT
 **`m2kcal.py`** — 一支能用的 Python CLI（走 CalDAV），指令：
 
 ```
-python3 m2kcal.py cals                 # 列出日曆
-python3 m2kcal.py agenda --days 7      # 未來 7 天的會議
-python3 m2kcal.py list --start 2026-07-01 --end 2026-07-31
-python3 m2kcal.py book --title "專案週會" \
+python3 src/m2kcal.py cals                 # 列出日曆
+python3 src/m2kcal.py agenda --days 7      # 未來 7 天的會議
+python3 src/m2kcal.py list --start 2026-07-01 --end 2026-07-31
+python3 src/m2kcal.py book --title "專案週會" \
     --start "2026-07-08 14:00" --end "2026-07-08 15:00" \
     --location "3F 會議室"
 ```
@@ -152,7 +152,7 @@ python3 m2kcal.py book --title "專案週會" \
 ## 建議的下一步
 
 1. 你先在信箱設定確認 CalDAV 是否需要「應用程式密碼」，取得可用憑證。
-2. 設好環境變數後跑 `python3 m2kcal.py cals` 驗證連得上。
+2. 設好環境變數後跑 `python3 src/m2kcal.py cals` 驗證連得上。
 3. 驗證通過後，這套 CalDAV 呼叫可原封不動包成 **MCP server**（讓 Claude 直接幫你查行事曆、排會議），程式邏輯與 CLI 完全共用——要的話我可以接著做。
 
 ## 分析邊界
