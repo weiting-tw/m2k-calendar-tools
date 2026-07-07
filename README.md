@@ -92,7 +92,8 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 ## 四、MCP server（讓 Claude 直接查行程 / 建會議）
 
-`src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`。
+`src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`、`update_event`
+（修改既有會議的標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位）。
 
 ```bash
 pip install "mcp[cli]" caldav icalendar requests

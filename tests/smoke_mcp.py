@@ -39,7 +39,8 @@ async def test_stdio():
         async with ClientSession(r, w) as s:
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
-            assert tools == ["agenda", "book", "list_calendars", "list_events"], tools
+            assert tools == ["agenda", "book", "list_calendars", "list_events",
+                             "update_event"], tools
             print("stdio tools:", tools)
             res = await s.call_tool("list_events", {"start": "亂格式", "end": "2026-07-31"})
             txt = res.content[0].text

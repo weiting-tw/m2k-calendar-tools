@@ -14,7 +14,7 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 
 | 使用者想做 | 用什麼 |
 |---|---|
-| 查自己行程 / 建會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `list_calendars` |
+| 查自己行程 / 建會議 / 改會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `list_calendars` |
 | 查自己行程 / 建會議（終端機） | `python3 src/m2kcal.py ...` |
 | 產生看板 HTML（每天一欄） | `python3 src/m2kcal.py board --days 7` |
 | 展開部門成員、群組排會議＋寄通知信 | webmail 腳本 `userscripts/m2k-group-book.user.js` |
@@ -37,15 +37,17 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 
 ## MCP server（src/m2k_mcp_server.py）
 
-提供工具 `list_calendars` / `agenda` / `list_events` / `book`；設定範例見 README「四、MCP server」。
-只能查自己的日曆與建立會議（他人日曆需 webmail session，MCP 拿不到）。
+提供工具 `list_calendars` / `agenda` / `list_events` / `book` / `update_event`
+（修改既有會議：標題/時間/地點/描述/增減與會者，uid 取自查詢輸出的 `id:` 欄位）；
+設定範例見 README「四、MCP server」。
+只能操作自己的日曆（他人日曆需 webmail session，MCP 拿不到）。
 三種模式：stdio（本機、環境變數憑證，預設）、`--http`（公用部署，每請求帶
 `Authorization: Basic`）、`--oauth`（claude.ai Connectors／手機 app，OAuth 2.1 +
 無狀態加密 token）。後兩者伺服器都不保存帳密。
 
 ## 行為須知（避免誤判結果）
 
-- book 時 Mail2000 的 PUT 常回 500 但**其實已建立**；工具會自動 GET 驗證，以驗證結果為準。
+- book / update_event 時 Mail2000 的 PUT 常回 500 但**其實已寫入**；工具會自動 GET 驗證，以驗證結果為準。
 - 時間輸入格式 `YYYY-MM-DD HH:MM` 或 `YYYY-MM-DD`（台北時間）；ICS 內部用 TZID=Asia/Taipei + VTIMEZONE。
 - CalDAV 無排程：`--attendee` 只寫入事件、**不會自動寄邀請信**；要通知請走 group-book 腳本的原生流程。
 - 可預期錯誤（帳密錯、時間格式錯、找不到日曆）會回「錯誤：...」訊息，MCP server 不會因此中斷。
