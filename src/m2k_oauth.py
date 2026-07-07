@@ -51,8 +51,10 @@ DEFAULT_DOMAIN = os.environ.get("M2K_DOMAIN", "gss.com.tw")  # 帳號沒打 @ �
 
 _SEC_HEADERS = {             # /login 頁安全標頭：防點擊劫持、不快取憑證頁
     "X-Frame-Options": "DENY",
+    # 不能設 form-action：Chrome 會拿它檢查「表單 POST 後的 302 重導目標」，
+    # 而登入成功後必須 302 到 client 的 redirect_uri（不同 origin），鎖 'self' 會整個擋掉。
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
-                               "script-src 'unsafe-inline'; form-action 'self'; "
+                               "script-src 'unsafe-inline'; "
                                "frame-ancestors 'none'",
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
