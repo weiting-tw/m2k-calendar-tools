@@ -113,7 +113,8 @@ def connect(auth=None):
     """auth=(url, user, pwd) 可覆寫憑證（MCP HTTP 模式每請求不同人）；
     未給則走 creds()（環境變數 / .env / 互動輸入）。"""
     url, user, pwd = auth or creds()
-    client = caldav.DAVClient(url=url, username=user, password=pwd)
+    # timeout 必設：MCP OAuth 登入頁會等這個驗證，無 timeout 時瀏覽器端會無限轉圈
+    client = caldav.DAVClient(url=url, username=user, password=pwd, timeout=30)
     try:
         principal = client.principal()
     except Exception as e:
