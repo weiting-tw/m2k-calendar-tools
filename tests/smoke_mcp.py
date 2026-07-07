@@ -108,6 +108,7 @@ async def test_oauth(base, key_b64):
         login = await c.get(base + loc if loc.startswith("/") else loc)
         assert login.status_code == 200 and "應用程式專用密碼" in login.text
         assert login.headers.get("x-frame-options") == "DENY", login.headers
+        assert "驗證中，請稍候" in login.text, "登入頁應含 loading 腳本"
         txn = loc.split("txn=")[1]
         for i in range(5):
             # user 不帶 @ → 伺服器自動補預設網域後才驗證
