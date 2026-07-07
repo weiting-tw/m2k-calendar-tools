@@ -15,6 +15,7 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 使用者想做 | 用什麼 |
 |---|---|
 | 查自己行程 / 建會議 / 改會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `list_calendars` |
+| 互動行事曆畫面（週/月檢視、UI 上直接增改會議） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI） |
 | 查自己行程 / 建會議（終端機） | `python3 src/m2kcal.py ...` |
 | 產生看板 HTML（每天一欄） | `python3 src/m2kcal.py board --days 7` |
 | 展開部門成員、群組排會議＋寄通知信 | webmail 腳本 `userscripts/m2k-group-book.user.js` |
