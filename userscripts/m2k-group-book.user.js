@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         m2k 群組排會議助手 (Mail2000 Group Booking)
 // @namespace    gss.m2k.groupbook
-// @version      0.4.0
+// @version      0.4.1
 // @description  Mail2000 會議排程：一站式填會議資訊 + 搜人 / 搜部門(自動展開成員) / 貼email，批次加入與會者並一鍵建立。同源、沿用登入、免 CORS、免 token。
 // @match        https://mail.gss.com.tw/cgi-bin/cal/*
 // @run-at       document-idle
@@ -20,6 +20,9 @@
   "use strict";
   const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 通訊錄回來的姓名/部門是伺服器 HTML 抽出的文字，塞回 innerHTML 前必須跳脫
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const scrapeEmails = (root) =>
     [...new Set(([...root.querySelectorAll("td,span,a,div")].map((e) => e.textContent).join(" ")
       .match(EMAIL_RE) || []).map((e) => e.toLowerCase()))];
@@ -181,7 +184,7 @@
           const added = have.has(p.email.toLowerCase());
           const row = document.createElement("div");
           row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:3px 4px;cursor:pointer;border-radius:4px";
-          row.innerHTML = `<span>${p.name} <span style="color:#94a3b8">&lt;${p.email}&gt;</span></span>`;
+          row.innerHTML = `<span>${esc(p.name)} <span style="color:#94a3b8">&lt;${esc(p.email)}&gt;</span></span>`;
           const tag = document.createElement("span");
           tag.textContent = added ? "✓ 已加" : "＋ 加入";
           tag.style.cssText = "font-size:12px;white-space:nowrap;margin-left:6px;color:" + (added ? "#16a34a" : "#2563eb");
@@ -191,7 +194,7 @@
           if (!added) row.onclick = async () => { row.onclick = null; await addMany([p.email], log); refreshAtt(); tag.textContent = "✓ 已加"; tag.style.color = "#16a34a"; };
           res.appendChild(row);
         });
-      } catch (e) { res.innerHTML = "搜尋失敗：" + e.message; }
+      } catch (e) { res.innerHTML = "搜尋失敗：" + esc(e.message); }
     }
     async function doDeptSearch(q) {
       res.style.display = "block"; res.innerHTML = "搜尋中…"; addSel.style.display = "none";
@@ -202,12 +205,12 @@
         res.innerHTML = "";
         matches.forEach((d) => {
           const row = document.createElement("div"); row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:3px 0";
-          row.innerHTML = `<span>${d.name} <span style="color:#94a3b8">${d.path}</span></span>`;
+          row.innerHTML = `<span>${esc(d.name)} <span style="color:#94a3b8">${esc(d.path)}</span></span>`;
           const b = document.createElement("button"); b.textContent = "展開並加入"; b.style.cssText = "padding:3px 8px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer";
           b.onclick = async () => { b.disabled = true; b.textContent = "展開中…"; const em = await listDeptMembers(d.path, (s) => (b.textContent = s)); log(`部門 ${d.name}：${em.length} 位成員。`); await addMany(em, log); refreshAtt(); b.textContent = "已加入"; };
           row.appendChild(b); res.appendChild(row);
         });
-      } catch (e) { res.innerHTML = "失敗：" + e.message; }
+      } catch (e) { res.innerHTML = "失敗：" + esc(e.message); }
     }
     function triggerSearch() {
       const q = $("#gb-q").value.trim(); if (!q) { res.style.display = "none"; return; }
