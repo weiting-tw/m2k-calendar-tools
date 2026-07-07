@@ -110,8 +110,9 @@ async def test_oauth(base, key_b64):
         assert login.headers.get("x-frame-options") == "DENY", login.headers
         txn = loc.split("txn=")[1]
         for i in range(5):
+            # user 不帶 @ → 伺服器自動補預設網域後才驗證
             bad = await c.post(f"{base}/login",
-                               data={"txn": txn, "user": "fake@example.com", "password": "wrong"})
+                               data={"txn": txn, "user": "fakeuser", "password": "wrong"})
             expect = 401 if i < 4 else 429
             assert bad.status_code == expect, (i, bad.status_code)
         assert "嘗試次數過多" in bad.text
