@@ -148,7 +148,26 @@ claude mcp add --transport http m2k-calendar https://主機:8763/mcp \
 - **必須放在 HTTPS 反向代理後**（nginx / caddy）——Basic 標頭在純 HTTP 下等同明文傳帳密。
 - HTTP 模式**絕不回退**到環境變數憑證；沒帶或帶錯 `Authorization` 一律回錯誤，不會冒用部署者身分。
 - 撤銷存取＝使用者自己到 webmail 撤銷該應用程式專用密碼，伺服器端無需任何操作。
-- stdio 模式（上方本機設定）行為不變，兩種模式可並存。
+- stdio 模式（上方本機設定）行為不變，各模式可並存部署。
+
+### claude.ai Connectors（手機 app / 網頁版）：OAuth bridge
+
+claude.ai 的 Connectors 不支援自訂 header，需走標準 OAuth 2.1（動態註冊 + PKCE）：
+
+```bash
+pip install cryptography   # 額外相依
+python3 src/m2k_mcp_server.py --oauth --issuer https://對外網址 --host 0.0.0.0 --port 8763
+```
+
+- 使用者初次連接會被導到 `/login` 輸入 m2k 帳號＋應用程式專用密碼；bridge 先打一次
+  CalDAV 驗證，通過後把憑證用伺服器金鑰 AES-GCM 加密封進 token——**無狀態設計，
+  伺服器不存任何憑證**。access token 1 小時、refresh token 30 天自動輪替。
+- 金鑰來源：環境變數 `M2K_BRIDGE_KEY`（urlsafe base64 的 32 bytes），或首次啟動自動
+  產生專案根目錄 `.bridge-key`（chmod 600）。**換金鑰＝所有已發 token 立即失效**。
+- claude.ai 端設定：Settings ▸ Connectors ▸ Add custom connector → 填 `https://對外網址/mcp`
+  → 依畫面完成授權登入。
+- 前置需求：**公網可達的 HTTPS 網址**（claude.ai 的連線來自 Anthropic 雲端，不是你的裝置）；
+  行程內容會經過 Anthropic 伺服器，部署前請先確認公司資料政策。
 
 ## 五、Skill（skill/SKILL.md）
 
