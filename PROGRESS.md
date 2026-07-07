@@ -1,6 +1,14 @@
 # m2k 行事曆工具組 — 進度與待辦
 
-最後更新：2026-07（Cowork 分析 + 開發）
+最後更新：2026-07-07（程式碼修正 + 目錄結構調整）
+
+## 2026-07-07 修正紀錄
+- `m2kcal.py` 可預期錯誤改丟 `M2KError`（原 `sys.exit` 會殺掉 MCP server）；CLI 於 `main()` 統一接住。
+- 抽出 `put_and_verify()`，CLI 與 MCP 的 book 共用 PUT+GET 驗證邏輯；移除 `cmd_book` 重複輸出與死碼（`fmt_event`、未用 import）。
+- `m2kgroup.py` 分頁參數修正為已實測的 `pageno`、端點改 `adb2main_mds`（原 `page` 參數會靜默截斷成 25 人）。
+- `m2k-group-book.user.js` 補 HTML 跳脫（通訊錄姓名/部門塞 innerHTML 前 escape），v0.4.1。
+- 測試補 `parse_ics`/`_linkify`/`_rrule_text`/`M2KError`，共 30 項。
+- 目錄結構調整：`src/`、`tests/`、`userscripts/`、`docs/`；`README-使用說明.md` 改名 `README.md`；移除已完成任務的 `commit.sh`。
 
 ## 專案目標
 把難用的公司 m2k 信箱行事曆（Openfind Mail2000）變好用：CLI 查詢/建立會議、
@@ -27,20 +35,19 @@ webmail 使用者腳本做群組排會議與多人看板。
 ## 交付物（檔案）
 | 檔案 | 用途 | 狀態 |
 |---|---|---|
-| `m2kcal.py` | 行事曆 CLI（CalDAV）:cals/agenda/list/**board**/book/raw/diag | ✅ 真實環境驗證（讀+寫+看板） |
-| `m2kgroup.py` | 通訊錄群組展開 CLI（需帶 session token） | ✅ 語法+離線測試（實務被腳本取代） |
-| `m2k-group-book.user.js` | webmail 使用者腳本：搜人(autocomplete)/搜部門展開/貼email → 填原生排程表單一鍵建立 | ✅ 對真實頁面實測 |
-| `m2k-multi-calendar-board.user.js` | webmail 使用者腳本：多人/他人/公用行事曆合併看板 | ✅ 資料流程+渲染實測 |
-| `m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install mcp[cli]`） |
+| `src/m2kcal.py` | 行事曆 CLI（CalDAV）:cals/agenda/list/**board**/book/raw/diag | ✅ 真實環境驗證（讀+寫+看板） |
+| `src/m2kgroup.py` | 通訊錄群組展開 CLI（需帶 session token） | ✅ 語法+離線測試（實務被腳本取代） |
+| `userscripts/m2k-group-book.user.js` | webmail 使用者腳本：搜人(autocomplete)/搜部門展開/貼email → 填原生排程表單一鍵建立 | ✅ 對真實頁面實測 |
+| `userscripts/m2k-multi-calendar-board.user.js` | webmail 使用者腳本：多人/他人/公用行事曆合併看板 | ✅ 資料流程+渲染實測 |
+| `src/m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install mcp[cli]`） |
 | `skill/SKILL.md` | m2k-calendar skill（供 Settings ▸ Capabilities 匯入） | ✅ |
-| `test_m2k.py` | 離線單元測試 | ✅ 全過 |
-| `README-使用說明.md` | 使用說明 | — |
-| `m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — |
+| `tests/test_m2k.py` | 離線單元測試 | ✅ 30 項全過 |
+| `README.md` | 使用說明 | — |
+| `docs/m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — |
 | `.env.example` | 環境變數範本（複製成 `.env`） | — |
-| `commit.sh` | 在本機補完 git commit 用 | — |
 
 ## 測試狀態
-- 離線單元測試 `python3 test_m2k.py` → 全過（ICS/TZID/時間解析/通訊錄解析/看板渲染）。
+- 離線單元測試 `python3 tests/test_m2k.py` → 30 項全過（ICS 產生/解析/TZID/時間解析/linkify/rrule/通訊錄解析）。
 - 真實環境：`cals`✓、`agenda` 讀取✓、`book` 建立（GET 驗證）✓、部門展開 CSBDBG✓、autocomplete 資料✓、feeds 讀他人（Bear_Lee）事件✓、看板渲染✓。
 - CLI `board` 用你真實資料開瀏覽器：功能已具備，建議再自行開一次確認畫面。
 
@@ -50,7 +57,6 @@ webmail 使用者腳本做群組排會議與多人看板。
 3. **看他人行事曆需對方先分享**;無法用 email 臨時查完整內容（僅 free/busy 可跨查）。
 4. **多層部門**目前抓「該部門直接成員」;更深子部門需個別搜。
 5. **GIL 警告**:Python 3.13t + lxml 的環境警告，加 `PYTHON_GIL=0` 可消，無害。
-6. **git 在同步資料夾**沙箱權限受限 → commit 需在你本機跑 `commit.sh`。
 
 ## 待辦（TODO）
 - [ ] 決定並實作跨使用者查詢：**輸入 email 看 free/busy 忙碌時段**（唯一可行的臨時查）。
@@ -62,14 +68,14 @@ webmail 使用者腳本做群組排會議與多人看板。
 - [x] 把 CalDAV 查詢/book 包成 **MCP**(`m2k_mcp_server.py`)。
 - [x] 產出 **Skill**(`skill/SKILL.md`)。
 - [ ] （選）腳本內靜音 GIL 警告，免每次加 `PYTHON_GIL=0`。
+- [ ] 評估 MCP 公用化：改 streamable-http 傳輸、部署在內網主機，認證採「每請求帶各自的
+      應用程式專用密碼（Basic over HTTPS，pass-through 到 CalDAV）」，避免集中保管他人憑證。
 
 ## 打包方式
-可以直接打包。deliverable 檔案：
-`m2kcal.py`、`m2kgroup.py`、`test_m2k.py`、`m2k-group-book.user.js`、
-`m2k-multi-calendar-board.user.js`、`README-使用說明.md`、
-`m2k-calendar-cli-feasibility.md`、`.env.example`、`commit.sh`、`PROGRESS.md`
+可以直接打包。deliverable 為 `src/`、`tests/`、`userscripts/`、`docs/`、`skill/`
+與根目錄的 `README.md`、`PROGRESS.md`、`.env.example`。
 
 **打包前請排除（機密/暫存）**：`.env`(密碼！)、`m2k-board.html`、`m2k-board-sample.html`、
 `.env.test`、`__pycache__/`。（`.gitignore` 已涵蓋這些。）
 
-建議在本機：`bash commit.sh` 補完版控後，再 `git archive` 或直接壓縮資料夾（排除上述）。
+建議用 `git archive` 打包（自動套用 .gitignore 範圍外的追蹤檔案）。
