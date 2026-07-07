@@ -7,6 +7,7 @@ m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議（走
 
 安裝：
   pip install "mcp[cli]" caldav icalendar requests
+  # OAuth 模式另需： pip install cryptography
 
 == 模式一：stdio（本機、單人，預設）==
 憑證用環境變數（或專案根目錄 .env，會自動載入）：
@@ -29,7 +30,7 @@ Claude Desktop 設定（claude_desktop_config.json）:
 }
 執行測試：python3 src/m2k_mcp_server.py   （stdio 模式，等待 MCP 用戶端連入）
 
-== 模式二：streamable-http（公用部署、多人）==
+== 模式二：streamable-http（Claude Code/Desktop 多人共用）==
   python3 src/m2k_mcp_server.py --http --host 0.0.0.0 --port 8763
 憑證採 pass-through：伺服器**不保存任何帳密**，每個請求必須自帶
   Authorization: Basic <base64(帳號:應用程式專用密碼)>
@@ -39,6 +40,15 @@ Claude Desktop 設定（claude_desktop_config.json）:
 Claude Code 用戶端設定：
   claude mcp add --transport http m2k-calendar https://主機:8763/mcp \\
     --header "Authorization: Basic $(printf '%s' '帳號:應用程式專用密碼' | base64)"
+
+== 模式三：OAuth bridge（claude.ai Connectors：手機 app / 網頁版）==
+  python3 src/m2k_mcp_server.py --oauth --issuer https://對外網址 \\
+      --host 0.0.0.0 --port 8763
+標準 OAuth 2.1（動態註冊 + PKCE）。使用者第一次連接時會被導到 /login
+輸入 m2k 帳號＋應用程式專用密碼，驗證後憑證以伺服器金鑰加密封進
+token（無狀態，伺服器不存憑證）。細節見 m2k_oauth.py。
+issuer 必須是用戶端可達的 HTTPS 網址（claude.ai 的連線來自 Anthropic
+雲端，需公網可達）。
 """
 import argparse
 import os
@@ -48,13 +58,13 @@ import uuid
 
 try:
     from mcp.server.fastmcp import FastMCP, Context
+    from mcp.server.auth.middleware.auth_context import get_access_token
 except ImportError:
     sys.exit('需要 mcp 套件：pip install "mcp[cli]"')
 
 import m2kcal  # 重用既有 CalDAV / ICS 邏輯
 
 m2kcal.load_dotenv()
-mcp = FastMCP("m2k-calendar")
 
 
 # 注意：工具內一律 catch M2KError 回傳錯誤字串。
@@ -62,10 +72,14 @@ mcp = FastMCP("m2k-calendar")
 
 
 def _auth(ctx):
-    """取本次呼叫的 CalDAV 憑證來源。
-    stdio 模式（無 HTTP request）→ 回 None，走環境變數/.env（creds()）。
-    HTTP 模式 → 強制從該請求的 Authorization: Basic 取，絕不回退到
-    環境變數，避免多人共用時冒用部署者身分。"""
+    """取本次呼叫的 CalDAV 憑證來源，依模式：
+    OAuth 模式 → 從 Bearer token 解密出的使用者憑證（get_access_token）。
+    HTTP 模式  → 該請求的 Authorization: Basic，絕不回退到環境變數，
+                 避免多人共用時冒用部署者身分。
+    stdio 模式 → 回 None，走環境變數/.env（creds()）。"""
+    tok = get_access_token()
+    if tok is not None and getattr(tok, "m2k_user", ""):
+        return (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), tok.m2k_user, tok.m2k_pass)
     req = getattr(ctx.request_context, "request", None) if ctx else None
     if req is None:
         return None
@@ -78,7 +92,6 @@ def _cal(auth):
     return m2kcal.pick_calendar(p)
 
 
-@mcp.tool()
 def list_calendars(ctx: Context = None) -> str:
     """列出你在 CalDAV 可存取的行事曆名稱。"""
     try:
@@ -88,7 +101,6 @@ def list_calendars(ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-@mcp.tool()
 def agenda(days: int = 7, ctx: Context = None) -> str:
     """看未來 N 天的行程（依天分組）。days 預設 7。"""
     try:
@@ -101,7 +113,6 @@ def agenda(days: int = 7, ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-@mcp.tool()
 def list_events(start: str, end: str, ctx: Context = None) -> str:
     """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。"""
     try:
@@ -114,7 +125,6 @@ def list_events(start: str, end: str, ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-@mcp.tool()
 def book(title: str, start: str, end: str = "", location: str = "",
          description: str = "", attendees: list[str] | None = None,
          ctx: Context = None) -> str:
@@ -147,16 +157,43 @@ def book(title: str, start: str, end: str = "", location: str = "",
     return "\n".join(lines)
 
 
+TOOLS = (list_calendars, agenda, list_events, book)
+
+
+def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
+    if oauth:
+        import m2k_oauth
+        provider, auth_settings = m2k_oauth.create(issuer)
+        server = FastMCP("m2k-calendar", auth_server_provider=provider, auth=auth_settings)
+        m2k_oauth.add_login_routes(server, provider)
+    else:
+        server = FastMCP("m2k-calendar")
+    for f in TOOLS:
+        server.tool()(f)
+    if host:
+        server.settings.host = host
+    if port:
+        server.settings.port = port
+    return server
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="m2k 行事曆 MCP server")
     ap.add_argument("--http", action="store_true",
-                    help="以 streamable-http 模式啟動（公用部署，憑證走每請求 Basic 標頭）")
-    ap.add_argument("--host", default="127.0.0.1", help="HTTP 模式綁定位址（預設 127.0.0.1）")
-    ap.add_argument("--port", type=int, default=8763, help="HTTP 模式埠號（預設 8763）")
+                    help="streamable-http 模式（憑證走每請求 Basic 標頭）")
+    ap.add_argument("--oauth", action="store_true",
+                    help="streamable-http + OAuth bridge 模式（claude.ai Connectors 用）")
+    ap.add_argument("--issuer",
+                    help="OAuth 模式必填：用戶端可達的對外網址（如 https://host:8763）")
+    ap.add_argument("--host", default="127.0.0.1", help="HTTP/OAuth 模式綁定位址（預設 127.0.0.1）")
+    ap.add_argument("--port", type=int, default=8763, help="HTTP/OAuth 模式埠號（預設 8763）")
     args = ap.parse_args()
-    if args.http:
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
-        mcp.run(transport="streamable-http")
+    if args.oauth:
+        if not args.issuer:
+            ap.error("--oauth 需要 --issuer（用戶端可達的對外網址）")
+        build_server(args.host, args.port, oauth=True,
+                     issuer=args.issuer).run(transport="streamable-http")
+    elif args.http:
+        build_server(args.host, args.port).run(transport="streamable-http")
     else:
-        mcp.run()
+        build_server().run()

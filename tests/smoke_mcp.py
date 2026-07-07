@@ -11,19 +11,24 @@
 """
 import asyncio
 import base64
+import hashlib
 import os
+import secrets
 import socket
 import subprocess
 import sys
 import time
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
 SRV = os.path.join(ROOT, "src", "m2k_mcp_server.py")
-PORT = 8971  # 煙霧測試專用埠，避免撞正式部署的 8763
+PORT = 8971        # 煙霧測試專用埠，避免撞正式部署的 8763
+PORT_OAUTH = 8972
 
 
 async def test_stdio():
@@ -72,6 +77,64 @@ async def test_http(url):
             assert txt.startswith("錯誤：登入失敗"), txt
 
 
+async def test_oauth(base, key_b64):
+    redirect = "http://127.0.0.1:19999/callback"
+    async with httpx.AsyncClient() as c:
+        # 1) metadata → 動態註冊 → /authorize 轉導到 /login
+        meta = (await c.get(f"{base}/.well-known/oauth-authorization-server")).json()
+        assert meta["issuer"].rstrip("/") == base, meta
+        reg = (await c.post(meta["registration_endpoint"], json={
+            "redirect_uris": [redirect], "client_name": "smoke",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"], "token_endpoint_auth_method": "none",
+        })).json()
+        assert "client_id" in reg, reg
+        print("oauth register client_id:", reg["client_id"][:12], "…")
+
+        verifier = secrets.token_urlsafe(48)
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+        r = await c.get(meta["authorization_endpoint"], params={
+            "client_id": reg["client_id"], "response_type": "code",
+            "redirect_uri": redirect, "code_challenge": challenge,
+            "code_challenge_method": "S256", "state": "st1", "scope": "m2k",
+        }, follow_redirects=False)
+        assert r.status_code in (302, 307), (r.status_code, r.text[:200])
+        loc = r.headers["location"]
+        assert "/login?txn=" in loc, loc
+        print("oauth authorize -> redirect", loc[:30], "…")
+
+        # 2) 登入頁可開；假憑證被 CalDAV 驗證擋下
+        login = await c.get(base + loc if loc.startswith("/") else loc)
+        assert login.status_code == 200 and "應用程式專用密碼" in login.text
+        txn = loc.split("txn=")[1]
+        bad = await c.post(f"{base}/login",
+                           data={"txn": txn, "user": "fake@gss.com.tw", "password": "wrong"})
+        assert bad.status_code == 401 and "驗證失敗" in bad.text, bad.status_code
+        print("oauth login fake-cred -> 401 驗證失敗")
+
+        # 3) 無 token 打 MCP endpoint → HTTP 401（OAuth 模式由 middleware 擋）
+        r2 = await c.post(f"{base}/mcp", json={})
+        assert r2.status_code == 401, r2.status_code
+        print("oauth mcp no-token -> 401")
+
+    # 4) 用同一把金鑰直接鑄 token（模擬完成授權）→ Bearer 呼叫工具
+    #    假憑證會 pass-through 到 CalDAV 被拒 → 證明 token→憑證→CalDAV 全鏈路
+    os.environ["M2K_BRIDGE_KEY"] = key_b64
+    import m2k_oauth
+    provider = m2k_oauth.M2KOAuthProvider(
+        m2k_oauth.TokenCrypto(base64.urlsafe_b64decode(key_b64)),
+        clients_path="/nonexistent/no.json")
+    tok = provider._mint("smoke", ["m2k"], "fake@gss.com.tw", "wrongpass")
+    hdr = {"Authorization": f"Bearer {tok.access_token}"}
+    async with streamablehttp_client(f"{base}/mcp", headers=hdr) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            txt = (await s.call_tool("agenda", {"days": 1})).content[0].text
+            print("oauth bearer fake-cred ->", txt[:60])
+            assert txt.startswith("錯誤：登入失敗"), txt
+
+
 def wait_port(port, timeout=15):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -84,6 +147,7 @@ def wait_port(port, timeout=15):
 
 def main():
     asyncio.run(asyncio.wait_for(test_stdio(), 60))
+
     proc = subprocess.Popen(
         [sys.executable, SRV, "--http", "--port", str(PORT)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -93,6 +157,22 @@ def main():
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+    # OAuth 模式：臨時金鑰＋臨時 clients 檔，不落任何檔案到專案目錄
+    key_b64 = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+    base = f"http://127.0.0.1:{PORT_OAUTH}"
+    proc = subprocess.Popen(
+        [sys.executable, SRV, "--oauth", "--issuer", base, "--port", str(PORT_OAUTH)],
+        env={**os.environ, "M2K_BRIDGE_KEY": key_b64,
+             "M2K_OAUTH_CLIENTS": f"/tmp/m2k-smoke-clients-{os.getpid()}.json"},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        wait_port(PORT_OAUTH)
+        asyncio.run(asyncio.wait_for(test_oauth(base, key_b64), 120))
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
     print("\nSMOKE-OK ✅")
 
 
