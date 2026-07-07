@@ -187,7 +187,7 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
 <p>請輸入 Mail2000 帳號與<b>應用程式專用密碼</b>（非登入密碼，於 webmail 設定產生）。</p>
 {err}
 <input type="hidden" name="txn" value="{txn}">
-<input name="user" placeholder="帳號（例：you，可不打 @{DEFAULT_DOMAIN}）" autocomplete="username" required>
+<input name="user" placeholder="帳號（可省略 @{DEFAULT_DOMAIN}）" autocomplete="username" required>
 <input name="password" type="password" placeholder="應用程式專用密碼" autocomplete="current-password" required>
 <button type="submit">驗證並授權</button>
 <p class="note">憑證只用來即時驗證並加密封入你的存取權杖，伺服器不儲存。
@@ -207,7 +207,8 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
         form = await request.form()
         txn = str(form.get("txn", ""))
         user = str(form.get("user", "")).strip()
-        pwd = str(form.get("password", ""))
+        # 應用程式專用密碼不含前後空白；strip 掉複製貼上常見的殘留空白/換行
+        pwd = str(form.get("password", "")).strip()
         if "@" not in user:
             user += "@" + DEFAULT_DOMAIN
         entry = self._pending.get(txn)
