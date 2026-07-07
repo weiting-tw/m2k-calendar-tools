@@ -21,20 +21,20 @@ GSS Mail2000 登入走 SAML SSO（/cgi-bin/saml_login），沒有帳密表單，
      注意：m/ssnid 為短效且各模組不同，過期就要重拿；這是 SAML 架構的先天限制。
 
 == 已驗證的 adb2 規格 ==
-  端點   : GET /cgi-bin/adb2main
+  端點   : GET /cgi-bin/adb2main_mds
   參數   : command=list, workingabid=<通訊錄id>, workingdirid=<部門/群組id>,
            tofield=widget, m=<token>, ssnid=<token>
-  分頁   : 每頁 25 筆
+  分頁   : 每頁 25 筆，分頁參數 pageno（從 1 起算）
   通訊錄 : GSS / ORG_ALL (公司)、ORG_DIR1 / ORG_DIR2 (部門樹)、個人通訊錄
   欄位   : 暱稱、姓氏、名字、信箱、電話；email 格式 英文名_姓@gss.com.tw
   (workingabid / workingdirid 可在通訊錄樹節點的 do_switchto(...) 參數取得)
 
 用法:
-  python3 m2kgroup.py expand --abid <ABID> --dirid <DIRID>
-  python3 m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
+  python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID>
+  python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
   # 直接串進 book:
-  python3 m2kcal.py book --title "部門會議" --start "2026-07-10 10:00" \
-      $(python3 m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees)
+  python3 src/m2kcal.py book --title "部門會議" --start "2026-07-10 10:00" \
+      $(python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees)
 """
 import os
 import sys
@@ -68,9 +68,9 @@ def fetch_page(s, abid, dirid, page):
         "tofield": "widget",
         "m": os.environ.get("M2K_M", ""),
         "ssnid": os.environ.get("M2K_SSNID", ""),
-        "page": page,   # 若站台用不同分頁參數(如 row/pageno)，於此調整
+        "pageno": page,  # 已實測的分頁參數（錯的參數會永遠回第一頁 → 靜默截斷成 25 人）
     }
-    r = s.get(f"{BASE}/cgi-bin/adb2main", params=params, timeout=20)
+    r = s.get(f"{BASE}/cgi-bin/adb2main_mds", params=params, timeout=20)
     r.raise_for_status()
     return r.text
 
