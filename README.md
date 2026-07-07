@@ -1,16 +1,29 @@
 # m2k 行事曆工具組 — 使用說明
 
-三個交付物，共用同一套已驗證的 m2k（Mail2000）行為分析。挑符合情境的用。
+一組交付物，共用同一套已驗證的 m2k（Mail2000）行為分析。挑符合情境的用。
+
+## 專案結構
+
+```
+src/          Python 原始碼（CLI 與 MCP server）
+tests/        離線單元測試（免帳密、免連線）
+userscripts/  webmail 使用者腳本（Tampermonkey）
+docs/         技術分析報告
+skill/        m2k-calendar skill（供 Claude 匯入）
+```
 
 ## 檔案一覽
 
 | 檔案 | 用途 | 認證 | 狀態 |
 |---|---|---|---|
-| `m2k-group-book.user.js` | **webmail 使用者腳本**：群組展開 + 批次加入與會者 | 沿用瀏覽器登入（同源、免 CORS、免 token） | ✅ 已對真實頁面實測 |
-| `m2kcal.py` | 行事曆 CLI：查詢 / book / 加與會者 | CalDAV Basic（需應用程式密碼） | ✅ 語法 + 離線測試通過 |
-| `m2kgroup.py` | 群組展開 CLI | 需帶瀏覽器 session token（SAML 限制） | ✅ 語法 + 離線測試通過 |
-| `test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ✅ 17 項全過 |
-| `m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — | — |
+| `userscripts/m2k-group-book.user.js` | **webmail 使用者腳本**：群組展開 + 批次加入與會者 | 沿用瀏覽器登入（同源、免 CORS、免 token） | ✅ 已對真實頁面實測 |
+| `userscripts/m2k-multi-calendar-board.user.js` | webmail 使用者腳本：多人/他人行事曆合併看板 | 同上 | ✅ 資料流程+渲染實測 |
+| `src/m2kcal.py` | 行事曆 CLI：查詢 / book / 看板 / 加與會者 | CalDAV Basic（需應用程式密碼） | ✅ 真實環境驗證（讀+寫+看板） |
+| `src/m2kgroup.py` | 群組展開 CLI | 需帶瀏覽器 session token（SAML 限制） | ✅ 語法 + 離線測試通過 |
+| `src/m2k_mcp_server.py` | MCP server：讓 Claude 查行程/建會議 | 同 m2kcal（環境變數/.env） | ✅ 語法驗證 |
+| `skill/SKILL.md` | m2k-calendar skill | — | ✅ |
+| `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ✅ 30 項全過 |
+| `docs/m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — | — |
 
 ---
 
@@ -20,7 +33,7 @@
 
 **安裝**
 1. Chrome 安裝 Tampermonkey 擴充。
-2. Tampermonkey → 新增腳本 → 貼上 `m2k-group-book.user.js` 內容 → 存檔。
+2. Tampermonkey → 新增腳本 → 貼上 `userscripts/m2k-group-book.user.js` 內容 → 存檔。
 
 > 新版 Chrome 需額外授權：`chrome://extensions` → Tampermonkey → 詳細資料 → 開「**允許使用者指令碼**」，再重整頁面（這是腳本沒出現最常見的原因）。
 
@@ -58,8 +71,8 @@
 pip install caldav icalendar
 export M2K_USER="wilber_chen@gss.com.tw"
 export M2K_PASS="應用程式專用密碼"     # 因 SAML，需在信箱設定產生 App 密碼
-python3 m2kcal.py agenda --days 7
-python3 m2kcal.py book --title "週會" --start "2026-07-10 14:00" --end "2026-07-10 15:00" \
+python3 src/m2kcal.py agenda --days 7
+python3 src/m2kcal.py book --title "週會" --start "2026-07-10 14:00" --end "2026-07-10 15:00" \
     --attendee user_a@example.com --attendee user_b@example.com
 ```
 
@@ -72,14 +85,62 @@ python3 m2kcal.py book --title "週會" --start "2026-07-10 14:00" --end "2026-0
 ```bash
 pip install requests
 export M2K_M="<通訊錄網址的 m 參數>"; export M2K_SSNID="<ssnid>"; export M2K_COOKIE="<Cookie>"
-python3 m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
+python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 ```
+
+---
+
+## 四、MCP server（讓 Claude 直接查行程 / 建會議）
+
+`src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`。
+
+```bash
+pip install "mcp[cli]" caldav icalendar requests
+```
+
+**Claude Desktop**（`claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "m2k-calendar": {
+      "command": "python3",
+      "args": ["/絕對路徑/m2k-calendar-tools/src/m2k_mcp_server.py"],
+      "env": {
+        "M2K_USER": "you@gss.com.tw",
+        "M2K_PASS": "應用程式專用密碼"
+      }
+    }
+  }
+}
+```
+
+**Claude Code**：
+
+```bash
+claude mcp add m2k-calendar \
+  -e M2K_USER=you@gss.com.tw -e M2K_PASS=應用程式專用密碼 \
+  -- python3 /絕對路徑/m2k-calendar-tools/src/m2k_mcp_server.py
+```
+
+注意事項：
+- 憑證也可放專案根目錄 `.env`（server 啟動時自動載入），就不必寫進設定檔。
+- 可預期錯誤（帳密錯、時間格式錯）會以「錯誤：...」回覆 Claude，server 不會中斷。
+- 範圍：只能查**自己的**日曆與建立會議；看他人行事曆請用使用者腳本（SAML session 限制）。
+- 目前是 **stdio 傳輸、單人本機執行**。要多人共用需改 HTTP 傳輸並解決各自的 CalDAV 認證（每人自帶應用程式密碼），詳見 PROGRESS.md 待辦。
+
+## 五、Skill（skill/SKILL.md）
+
+`skill/SKILL.md` 描述了「什麼情境用哪個工具」與行為須知（PUT 500、時區、不寄邀請等），
+讓 Claude 自動判斷。匯入方式擇一：
+- claude.ai / Claude Desktop：Settings ▸ Capabilities 匯入。
+- Claude Code：複製到專案 `.claude/skills/m2k-calendar/SKILL.md`。
 
 ---
 
 ## 功能測試怎麼做
 
-1. **離線單元測試**（最快、CI 友善）：`python3 test_m2k.py` → 驗證 ICS 產生、時間解析、成員解析。
+1. **離線單元測試**（最快、CI 友善）：`python3 tests/test_m2k.py` → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、成員解析。
 2. **即時煙霧測試**：使用者腳本在「會議排程」頁展開一個小群組，看與會者是否正確加入（不要按儲存即無副作用）。
 3. **真實整合測試**：用測試行事曆 book 一筆給自己，確認收得到；再小範圍找一位同事驗證群組通知。
 
