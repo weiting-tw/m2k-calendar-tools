@@ -1,0 +1,5 @@
+mcp[cli]>=1.28
+caldav>=1.4
+icalendar>=6.0
+requests>=2.31
+cryptography>=42
