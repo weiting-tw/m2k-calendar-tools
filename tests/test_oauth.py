@@ -76,4 +76,21 @@ stale = mo.CredAuthorizationCode(code="old", expires_at=time.time() - 1, **param
 provider._codes["old"] = stale
 check("過期授權碼拒絕", run(provider.load_authorization_code(client1, "old")) is None)
 
+# 4) 已完成的 txn：舊分頁 GET /login 應顯示正向完成頁，而非「失效」
+from starlette.requests import Request
+
+
+def mk_get(query):
+    return Request({"type": "http", "method": "GET",
+                    "query_string": query.encode(), "headers": []})
+
+
+provider._done["donetxn"] = time.time() + 60
+done_resp = run(provider.login_page(mk_get("txn=donetxn")))
+body = bytes(done_resp.body).decode()
+check("已完成 txn → 200 完成頁", done_resp.status_code == 200 and "授權完成" in body)
+miss_resp = run(provider.login_page(mk_get("txn=nope")))
+check("未知 txn → 400 失效頁", miss_resp.status_code == 400 and "重新連接" in bytes(miss_resp.body).decode())
+check("完成頁不含輸入框", "password" not in body)
+
 print("\n全部通過 ✅")

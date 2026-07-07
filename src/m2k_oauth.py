@@ -45,13 +45,15 @@ ACCESS_TTL = 3600            # access token 1 小時
 REFRESH_TTL = 30 * 24 * 3600  # refresh token 30 天
 TXN_TTL = 600                # /authorize → /login 完成的時限
 CODE_TTL = 300               # 授權碼時限
+DONE_TTL = 600               # 記住「已完成授權」的 txn，讓舊分頁看到正確的成功訊息
 MAX_LOGIN_TRIES = 5          # 同一授權交易的密碼錯誤上限（防透過 /login 暴力猜測）
 DEFAULT_DOMAIN = os.environ.get("M2K_DOMAIN", "gss.com.tw")  # 帳號沒打 @ 時自動補
 
 _SEC_HEADERS = {             # /login 頁安全標頭：防點擊劫持、不快取憑證頁
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
-                               "form-action 'self'; frame-ancestors 'none'",
+                               "script-src 'unsafe-inline'; form-action 'self'; "
+                               "frame-ancestors 'none'",
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
 }
@@ -143,6 +145,7 @@ class M2KOAuthProvider:
         # txn → {cid, params, exp, tries}；tries 達上限即作廢該授權交易
         self._pending: dict[str, dict] = {}
         self._codes: dict[str, CredAuthorizationCode] = {}
+        self._done: dict[str, float] = {}  # 已成功完成的 txn → 到期時間
 
     # --- client 註冊（DCR） ---
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
@@ -169,6 +172,7 @@ class M2KOAuthProvider:
         now = time.time()
         self._pending = {k: v for k, v in self._pending.items() if v["exp"] > now}
         self._codes = {k: v for k, v in self._codes.items() if v.expires_at > now}
+        self._done = {k: v for k, v in self._done.items() if v > now}
 
     def _login_html(self, txn: str, error: str = "") -> str:
         err = f'<p class="err">{error}</p>' if error else ""
@@ -180,8 +184,8 @@ box-shadow:0 4px 16px rgba(0,0,0,.08);width:320px}}h1{{font-size:17px;margin:0 0
 p{{font-size:13px;color:#475569;margin:6px 0}}input{{width:100%;box-sizing:border-box;padding:8px;
 margin:6px 0;border:1px solid #cbd5e1;border-radius:6px;font-size:14px}}
 button{{width:100%;padding:10px;margin-top:10px;background:#2563eb;color:#fff;border:none;
-border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
-.note{{font-size:11px;color:#94a3b8}}</style></head><body>
+border-radius:8px;font-size:14px;cursor:pointer}}button:disabled{{background:#94a3b8;cursor:progress}}
+.err{{color:#dc2626}}.note{{font-size:11px;color:#94a3b8}}</style></head><body>
 <form method="post" action="/login">
 <h1>連接 m2k 行事曆</h1>
 <p>請輸入 Mail2000 帳號與<b>應用程式專用密碼</b>（非登入密碼，於 webmail 設定產生）。</p>
@@ -189,18 +193,37 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
 <input type="hidden" name="txn" value="{txn}">
 <input name="user" placeholder="帳號（可省略 @{DEFAULT_DOMAIN}）" autocomplete="username" required>
 <input name="password" type="password" placeholder="應用程式專用密碼" autocomplete="current-password" required>
-<button type="submit">驗證並授權</button>
+<button id="sb" type="submit">驗證並授權</button>
 <p class="note">憑證只用來即時驗證並加密封入你的存取權杖，伺服器不儲存。
 撤銷方式：到 webmail 撤銷該應用程式專用密碼。</p>
-</form></body></html>"""
+</form>
+<script>
+document.querySelector("form").addEventListener("submit", function () {{
+  var b = document.getElementById("sb");
+  b.disabled = true; b.textContent = "驗證中，請稍候…（正在連線行事曆伺服器）";
+}});
+</script></body></html>"""
+
+    def _completed_html(self) -> str:
+        return """<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>授權完成</title>
+<style>body{font-family:-apple-system,"PingFang TC",sans-serif;background:#f1f5f9;display:flex;
+justify-content:center;padding-top:8vh;margin:0}.card{background:#fff;padding:28px;border-radius:12px;
+box-shadow:0 4px 16px rgba(0,0,0,.08);width:320px;text-align:center}h1{font-size:18px;margin:0 0 8px}
+p{font-size:13px;color:#475569}</style></head><body>
+<div class="card"><h1>✅ 授權完成</h1>
+<p>m2k 行事曆已成功連接，可以關閉此視窗並回到應用程式。</p></div></body></html>"""
 
     def _page(self, html: str, status: int = 200) -> HTMLResponse:
         return HTMLResponse(html, status_code=status, headers=_SEC_HEADERS)
 
     async def login_page(self, request: Request) -> Response:
         txn = request.query_params.get("txn", "")
+        if txn in self._done and self._done[txn] > time.time():
+            return self._page(self._completed_html())
         if txn not in self._pending:
-            return self._page(self._login_html("", "此授權連結無效或已過期，請回到用戶端重新連接。"), 400)
+            return self._page(self._login_html(
+                "", "此授權連結無效或已過期。若尚未連上，請回到用戶端重新連接。"), 400)
         return self._page(self._login_html(txn))
 
     async def login_submit(self, request: Request) -> Response:
@@ -211,11 +234,12 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
         pwd = str(form.get("password", "")).strip()
         if "@" not in user:
             user += "@" + DEFAULT_DOMAIN
+        if txn in self._done and self._done[txn] > time.time():
+            return self._page(self._completed_html())  # 舊分頁重送：其實已完成
         entry = self._pending.get(txn)
         if not entry or entry["exp"] < time.time():
             return self._page(self._login_html(
-                "", "此授權階段已失效——可能已完成授權（請回應用程式確認），"
-                    "或已過期／舊分頁重送。若尚未連上，請回到用戶端重新連接一次。"), 400)
+                "", "此授權階段已失效或已過期。若尚未連上，請回到用戶端重新連接一次。"), 400)
         client_id, params = entry["cid"], entry["params"]
 
         # 打一次 CalDAV 驗證憑證（blocking → 丟 worker thread）
@@ -245,6 +269,7 @@ border-radius:8px;font-size:14px;cursor:pointer}}.err{{color:#dc2626}}
             m2k_user=user,
             m2k_pass=pwd,
         )
+        self._done[txn] = time.time() + DONE_TTL  # 記住已完成，舊分頁重送時給正向頁
         extra = {"code": code}
         if params.state:
             extra["state"] = params.state
