@@ -16,6 +16,7 @@ __pycache__/
 # 其他
 .env.test
 .DS_Store
+node_modules/
 
 # OAuth bridge 執行期產物（金鑰與已註冊 client，絕不進版控）
 .bridge-key

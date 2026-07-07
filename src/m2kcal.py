@@ -279,6 +279,23 @@ def _event_rows(events):
     return rows
 
 
+def events_json(events):
+    """整理成 JSON 可序列化的清單（MCP App UI 用）。時間為台北牆鐘字串。"""
+    out = []
+    for r in _event_rows(events):
+        fmt = "%Y-%m-%d" if r["allday"] else "%Y-%m-%d %H:%M"
+        out.append({
+            "uid": r["uid"], "summary": r["summary"],
+            "start": r["start"].strftime(fmt),
+            "end": r["end"].strftime(fmt) if r["end"] else "",
+            "allday": r["allday"], "location": r["loc"], "description": r["desc"],
+            "organizer": r["organizer"], "rrule": r["rrule"],
+            "attendees": [{"name": n, "email": em, "partstat": ps}
+                          for n, em, ps in r["atts"]],
+        })
+    return out
+
+
 _URL_RE = re.compile(r'(https?://[^\s<>"\')\]]+)')
 
 

@@ -39,8 +39,15 @@ async def test_stdio():
         async with ClientSession(r, w) as s:
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
-            assert tools == ["agenda", "book", "list_calendars", "list_events",
-                             "update_event"], tools
+            assert tools == ["agenda", "book", "calendar_data", "list_calendars",
+                             "list_events", "show_calendar", "update_event"], tools
+            ui_tools = {t.name: (t.meta or {}).get("ui", {})
+                        for t in (await s.list_tools()).tools if t.meta}
+            assert ui_tools["show_calendar"]["resourceUri"] == "ui://m2k-calendar/calendar.html"
+            assert ui_tools["calendar_data"]["visibility"] == ["app"]
+            rr = await s.read_resource("ui://m2k-calendar/calendar.html")
+            assert rr.contents[0].mimeType == "text/html;profile=mcp-app"
+            print("app ui resource + tool meta: OK")
             print("stdio tools:", tools)
             res = await s.call_tool("list_events", {"start": "亂格式", "end": "2026-07-31"})
             txt = res.content[0].text

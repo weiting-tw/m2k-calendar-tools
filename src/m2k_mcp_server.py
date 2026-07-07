@@ -55,6 +55,7 @@ import os
 import sys
 import datetime as dt
 import uuid
+from typing import Any
 
 try:
     from mcp.server.fastmcp import FastMCP, Context
@@ -199,6 +200,55 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
     return "\n".join(lines)
 
 
+# ---------- MCP App：互動行事曆 UI ----------
+CAL_UI_URI = "ui://m2k-calendar/calendar.html"
+_CAL_UI_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "apps", "calendar", "dist", "calendar.html")
+
+
+def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx) -> dict[str, Any]:
+    cal = _cal(_auth(ctx))
+    events = cal.search(start=s, end=e, event=True, expand=True)
+    return {
+        "range": {"start": s.strftime("%Y-%m-%d"), "end": e.strftime("%Y-%m-%d")},
+        "today": dt.date.today().isoformat(),
+        "events": m2kcal.events_json(events),
+    }
+
+
+def show_calendar(start: str = "", days: int = 7, ctx: Context = None) -> dict[str, Any]:
+    """以互動行事曆 UI 顯示行程（週/月檢視，可直接在 UI 建立與修改會議）。
+    start 'YYYY-MM-DD'（預設今天）起 days 天。
+    使用者要「看行事曆／排程總覽」時優先用這個；純文字摘要用 agenda / list_events。"""
+    try:
+        s = (m2kcal.parse_when(start) if start
+             else dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+        return _calendar_payload(s, s + dt.timedelta(days=days), ctx)
+    except m2kcal.M2KError as e:
+        return {"error": str(e), "events": []}
+
+
+def calendar_data(start: str, end: str, ctx: Context = None) -> dict[str, Any]:
+    """（行事曆 UI 專用）回指定期間的結構化行程資料。start/end 'YYYY-MM-DD'。"""
+    try:
+        return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end), ctx)
+    except m2kcal.M2KError as e:
+        return {"error": str(e), "events": []}
+
+
+def _register_calendar_app(server: "FastMCP") -> None:
+    server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
+                structured_output=True)(show_calendar)
+    server.tool(meta={"ui": {"resourceUri": CAL_UI_URI, "visibility": ["app"]}},
+                structured_output=True)(calendar_data)
+
+    @server.resource(CAL_UI_URI, name="m2k 行事曆 UI",
+                     mime_type="text/html;profile=mcp-app")
+    def calendar_ui() -> str:
+        with open(_CAL_UI_HTML, encoding="utf-8") as f:
+            return f.read()
+
+
 TOOLS = (list_calendars, agenda, list_events, book, update_event)
 
 
@@ -212,6 +262,7 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
         server = FastMCP("m2k-calendar")
     for f in TOOLS:
         server.tool()(f)
+    _register_calendar_app(server)
     if host:
         server.settings.host = host
     if port:
