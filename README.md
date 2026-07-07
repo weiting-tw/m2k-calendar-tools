@@ -161,9 +161,13 @@ claude mcp add --transport http m2k-calendar https://主機:8763/mcp \
 
 ## 功能測試怎麼做
 
-1. **離線單元測試**（最快、CI 友善）：`python3 tests/test_m2k.py` → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、成員解析。
-2. **即時煙霧測試**：使用者腳本在「會議排程」頁展開一個小群組，看與會者是否正確加入（不要按儲存即無副作用）。
-3. **真實整合測試**：用測試行事曆 book 一筆給自己，確認收得到；再小範圍找一位同事驗證群組通知。
+1. **離線單元測試**（最快、CI 友善、免帳密免套件）：`python3 tests/test_m2k.py`
+   → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、Basic 認證解析、成員解析。
+2. **MCP 煙霧測試**（免真帳密，需 `pip install "mcp[cli]" caldav icalendar requests`）：
+   `python3 tests/smoke_mcp.py` → 自動啟動 server，驗證 stdio 與 HTTP 兩種模式的
+   工具呼叫、無/壞 Authorization 拒絕、假憑證 pass-through、錯誤後 server 存活。
+3. **使用者腳本即時測試**：在「會議排程」頁展開一個小群組，看與會者是否正確加入（不要按儲存即無副作用）。
+4. **真實整合測試**：用測試行事曆 book 一筆給自己，確認收得到；再小範圍找一位同事驗證群組通知。
 
 ## 關鍵限制（務必知道）
 - **登入是 SAML SSO** → 獨立 CLI 無法自動登入通訊錄；群組功能最穩的是使用者腳本（沿用瀏覽器登入）。
