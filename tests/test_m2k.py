@@ -80,7 +80,24 @@ check("linkify 跳脫 HTML", "<b>" not in h and "&lt;b&gt;" in h)
 check("linkify 網址轉連結", '<a href="https://ex.com/a?b=1"' in h)
 check("linkify 換行轉 br", "<br>" in h)
 
-# 3d) _rrule_text: 週期文字化（吃 dict-like，離線可測）
+# 3d) parse_basic_auth: MCP HTTP 模式的 pass-through 憑證解析
+import base64
+u, p = m2kcal.parse_basic_auth("Basic " + base64.b64encode(b"a@example.com:s3cret").decode())
+check("Basic 解析 user", u == "a@example.com")
+check("Basic 解析 pwd", p == "s3cret")
+u2, p2 = m2kcal.parse_basic_auth("basic " + base64.b64encode("a@example.com:p:w:d".encode()).decode())
+check("小寫 basic 可解析、密碼含冒號只切第一個", u2 == "a@example.com" and p2 == "p:w:d")
+for bad in ("", "Bearer xyz", "Basic %%%",
+            "Basic " + base64.b64encode(b"nocolon").decode(),
+            "Basic " + base64.b64encode(b":onlypwd").decode()):
+    try:
+        m2kcal.parse_basic_auth(bad)
+        ok = False
+    except m2kcal.M2KError:
+        ok = True
+    check(f"壞 Authorization 丟 M2KError ({bad[:16]!r})", ok)
+
+# 3e) _rrule_text: 週期文字化（吃 dict-like，離線可測）
 check("rrule 每週一三", m2kcal._rrule_text({"rrule": {"FREQ": ["WEEKLY"], "BYDAY": ["MO", "WE"]}}) == "每週 一三")
 check("rrule 無值空字串", m2kcal._rrule_text({}) == "")
 

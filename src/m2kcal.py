@@ -93,9 +93,26 @@ def creds():
     return _CREDS
 
 
+def parse_basic_auth(header):
+    """解析 'Basic <base64(user:pwd)>' 標頭，回 (user, pwd)。
+    供 MCP HTTP 模式 pass-through 用；格式不對丟 M2KError。"""
+    import base64
+    if not header or not header.lower().startswith("basic "):
+        raise M2KError("需要 Authorization: Basic <base64(帳號:應用程式專用密碼)> 標頭。")
+    try:
+        user, sep, pwd = base64.b64decode(header[6:].strip()).decode("utf-8").partition(":")
+    except Exception:
+        raise M2KError("Authorization 標頭不是合法的 Base64。")
+    if not sep or not user or not pwd:
+        raise M2KError("Authorization 標頭內容需為 帳號:應用程式專用密碼。")
+    return user, pwd
+
+
 # ---------- 連線 ----------
-def connect():
-    url, user, pwd = creds()
+def connect(auth=None):
+    """auth=(url, user, pwd) 可覆寫憑證（MCP HTTP 模式每請求不同人）；
+    未給則走 creds()（環境變數 / .env / 互動輸入）。"""
+    url, user, pwd = auth or creds()
     client = caldav.DAVClient(url=url, username=user, password=pwd)
     try:
         principal = client.principal()
@@ -501,7 +518,7 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
     return "\r\n".join(lines) + "\r\n"
 
 
-def put_and_verify(cal, ics, uid):
+def put_and_verify(cal, ics, uid, auth=None):
     """PUT 事件到日曆 collection 並 GET 驗證，CLI 與 MCP 共用。
 
     直接 PUT（不走 caldav 套件的條件式 PUT / If-None-Match，那會讓部分
@@ -509,7 +526,7 @@ def put_and_verify(cal, ics, uid):
     通知步驟出錯）但事件其實已寫入，因此不看 PUT status，以 GET 驗證為準。
     回傳 (put_status, parse_ics 結果)；驗證失敗丟 M2KError。"""
     import requests
-    url, user, pwd = creds()
+    url, user, pwd = auth or creds()
     coll = str(cal.url)
     if not coll.endswith("/"):
         coll += "/"
