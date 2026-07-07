@@ -190,6 +190,11 @@ def parse_ics(text):
             m = re.search(r"mailto:([^\s;>]+)", line)
             if m:
                 out["attendees"].append(m.group(1))
+        elif line.startswith("SEQUENCE:"):
+            try:
+                out["SEQUENCE"] = int(line[9:].strip())
+            except ValueError:
+                pass
     return out
 
 
@@ -541,6 +546,9 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
     from icalendar import Calendar as _ICal, Timezone, TimezoneStandard
     from icalendar.prop import vDatetime, vText
     ical = _ICal.from_ical(ics_text)
+    # Mail2000 存的事件常帶 METHOD:REQUEST，但 CalDAV PUT 禁止 METHOD
+    # （RFC 4791 §4.1），帶著 PUT 回去 SabreDAV 會回 415，必須拿掉。
+    ical.pop("METHOD", None)
     evs = [c for c in ical.walk("VEVENT")]
     if not evs:
         raise M2KError("這筆事件資料裡沒有 VEVENT，無法修改。")
@@ -613,10 +621,12 @@ def find_event_by_uid(cal, uid):
         raise M2KError(f"找不到 id 為 {uid} 的事件。請先用 agenda/list 查出正確的 id。")
 
 
-def put_and_verify(cal, ics, uid, auth=None, put_url=None):
+def put_and_verify(cal, ics, uid, auth=None, put_url=None, expect_seq=None):
     """PUT 事件到日曆 collection 並 GET 驗證，CLI 與 MCP 共用。
     put_url 未給時為新建（collection + uid.ics）；更新既有事件時
-    傳入該事件自己的 URL（server 端 href 不一定等於 uid.ics）。
+    傳入該事件自己的 URL（server 端 href 不一定等於 uid.ics），並帶
+    expect_seq＝新 ICS 的 SEQUENCE——僅驗 uid 會被舊版本騙過（更新被
+    拒時 GET 回的舊資料一樣含 uid），必須比對 SEQUENCE 才知道有生效。
 
     直接 PUT（不走 caldav 套件的條件式 PUT / If-None-Match，那會讓部分
     Mail2000/SabreDAV 後端回 500）。Mail2000 的 PUT 也可能回 500（存檔後的
@@ -640,7 +650,14 @@ def put_and_verify(cal, ics, uid, auth=None, put_url=None):
         if r.text:
             msg += "\n伺服器回應：" + r.text[:500]
         raise M2KError(msg)
-    return r.status_code, parse_ics(g.text)
+    info = parse_ics(g.text)
+    if expect_seq is not None and info.get("SEQUENCE") != expect_seq:
+        msg = (f"更新未生效：伺服器拒絕了這次 PUT（HTTP {r.status_code}），"
+               f"行事曆上仍是舊版本（SEQUENCE {info.get('SEQUENCE')}，預期 {expect_seq}）。")
+        if r.text:
+            msg += "\n伺服器回應：" + r.text[:500]
+        raise M2KError(msg)
+    return r.status_code, info
 
 
 def cmd_diag(args):

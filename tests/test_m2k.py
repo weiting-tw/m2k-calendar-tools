@@ -149,5 +149,10 @@ try:
 except m2kcal.M2KError:
     _r = True
 check("update 無 VEVENT 丟 M2KError", _r)
+# Mail2000 存的事件常帶 METHOD:REQUEST；CalDAV PUT 禁 METHOD（否則 415），必須拿掉
+src_m = src_ics.replace("VERSION:2.0", "VERSION:2.0\r\nMETHOD:REQUEST")
+u4 = m2kcal.update_event_ics(src_m, title="改標題")
+check("update 移除 METHOD", "METHOD" not in u4)
+check("parse_ics 取 SEQUENCE", m2kcal.parse_ics(u4).get("SEQUENCE") == 1)
 
 print("\n全部通過 ✅")
