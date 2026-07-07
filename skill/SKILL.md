@@ -39,6 +39,8 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 
 提供工具 `list_calendars` / `agenda` / `list_events` / `book`；設定範例見 README「四、MCP server」。
 只能查自己的日曆與建立會議（他人日曆需 webmail session，MCP 拿不到）。
+兩種模式：stdio（本機、環境變數憑證，預設）與 `--http`（公用部署，
+每請求帶 `Authorization: Basic`，伺服器不存帳密）。
 
 ## 行為須知（避免誤判結果）
 
