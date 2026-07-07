@@ -556,8 +556,10 @@ def _mk_attendee(email):
 
 
 def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
-                     desc=None, add_attendees=None, remove_attendees=None):
+                     desc=None, add_attendees=None, remove_attendees=None,
+                     respond=None):
     """純函式：讀入既有事件的 ICS，套用指定變更後回傳新 ICS 文字（None＝不變）。
+    respond=(email, PARTSTAT)：把該與會者的出席狀態改為 ACCEPTED/DECLINED/TENTATIVE。
     只動有給的欄位，其餘屬性（RRULE、VALARM、X-…）原樣保留；
     SEQUENCE +1、更新 DTSTAMP/LAST-MODIFIED。"""
     from icalendar import Calendar as _ICal, Timezone, TimezoneStandard
@@ -601,6 +603,18 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
         std.add("TZNAME", "CST")
         tz.add_component(std)
         ical.add_component(tz)
+
+    if respond:
+        email, status = respond
+        cur = ev.get("ATTENDEE")
+        cur = list(cur) if isinstance(cur, list) else ([cur] if cur else [])
+        hit = False
+        for a in cur:
+            if str(a).split(":")[-1].lower() == email.strip().lower():
+                a.params["PARTSTAT"] = vText(status)
+                hit = True
+        if not hit:
+            raise M2KError(f"{email} 不在此會議的與會者名單中，無法回覆出席狀態。")
 
     if add_attendees or remove_attendees:
         cur = ev.get("ATTENDEE")

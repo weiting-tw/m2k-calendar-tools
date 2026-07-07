@@ -70,6 +70,8 @@ body {
 .att { color: var(--tx2); font-size: 12px; padding: 1px 0; }
 .desc { margin-top: 8px; border-top: 1px dashed var(--bd); padding-top: 6px; white-space: pre-wrap; word-break: break-word; color: var(--tx2); max-height: 140px; overflow-y: auto; }
 .acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.rsvp { display: flex; gap: 6px; align-items: center; margin-top: 10px; border-top: 1px dashed var(--bd); padding-top: 8px; flex-wrap: wrap; }
+.rsvp input { flex: 1; border: 1px solid var(--bd); border-radius: 6px; padding: 5px 8px; font-size: 12px; background: var(--bg); color: var(--tx); min-width: 0; }
 .frow { display: flex; gap: 8px; margin: 6px 0; align-items: flex-start; }
 .flab { width: 52px; padding-top: 6px; color: var(--tx2); flex: none; }
 .frow input, .frow textarea { flex: 1; border: 1px solid var(--bd); border-radius: 6px; padding: 5px 8px; font-size: 13px; background: var(--bg); color: var(--tx); font-family: inherit; min-width: 0; }

@@ -207,11 +207,13 @@ _CAL_UI_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 
 def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx) -> dict[str, Any]:
-    cal = _cal(_auth(ctx))
+    auth = _auth(ctx) or m2kcal.creds()
+    cal = _cal(auth)
     events = cal.search(start=s, end=e, event=True, expand=True)
     return {
         "range": {"start": s.strftime("%Y-%m-%d"), "end": e.strftime("%Y-%m-%d")},
         "today": dt.date.today().isoformat(),
+        "me": auth[1],  # UI 據此顯示「我的出席狀態」快速回覆按鈕
         "events": m2kcal.events_json(events),
     }
 
@@ -236,6 +238,30 @@ def calendar_data(start: str, end: str, ctx: Context = None) -> dict[str, Any]:
         return {"error": str(e), "events": []}
 
 
+def respond_event(uid: str, response: str, ctx: Context = None) -> str:
+    """回覆會議邀請：把你在該會議的出席狀態改為 accept（接受）/
+    tentative（暫定）/ decline（拒絕）。uid 取自查詢輸出的 id: 欄位。
+    註：CalDAV 無排程，只更新你日曆上的狀態，不會寄回覆信給召集人。"""
+    status = {"accept": "ACCEPTED", "tentative": "TENTATIVE",
+              "decline": "DECLINED"}.get(response.strip().lower())
+    if not status:
+        return "錯誤：response 需為 accept / tentative / decline。"
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+        cal = _cal(auth)
+        ev = m2kcal.find_event_by_uid(cal, uid)
+        ics = m2kcal.update_event_ics(ev.data, respond=(auth[1], status))
+        new_seq = m2kcal.parse_ics(ics).get("SEQUENCE")
+        put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth,
+                                                 put_url=str(ev.url),
+                                                 expect_seq=new_seq)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    zh = {"ACCEPTED": "接受", "TENTATIVE": "暫定", "DECLINED": "拒絕"}[status]
+    return (f"已將你對「{info.get('SUMMARY', '?')}」的出席狀態改為：{zh}。\n"
+            "（僅更新你的日曆，不會自動通知召集人）")
+
+
 def _register_calendar_app(server: "FastMCP") -> None:
     server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
                 structured_output=True)(show_calendar)
@@ -249,7 +275,10 @@ def _register_calendar_app(server: "FastMCP") -> None:
             return f.read()
 
 
-TOOLS = (list_calendars, agenda, list_events, book, update_event)
+TOOLS = (list_calendars,)
+# 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
+# （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）
+APP_TOOLS = (agenda, list_events, book, update_event, respond_event)
 
 
 def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
@@ -262,6 +291,8 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
         server = FastMCP("m2k-calendar")
     for f in TOOLS:
         server.tool()(f)
+    for f in APP_TOOLS:
+        server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}})(f)
     _register_calendar_app(server)
     if host:
         server.settings.host = host

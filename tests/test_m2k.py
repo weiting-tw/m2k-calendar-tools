@@ -154,5 +154,15 @@ src_m = src_ics.replace("VERSION:2.0", "VERSION:2.0\r\nMETHOD:REQUEST")
 u4 = m2kcal.update_event_ics(src_m, title="改標題")
 check("update 移除 METHOD", "METHOD" not in u4)
 check("parse_ics 取 SEQUENCE", m2kcal.parse_ics(u4).get("SEQUENCE") == 1)
+# respond：改指定與會者的 PARTSTAT，其他人不動；不在名單丟 M2KError
+u5 = m2kcal.update_event_ics(src_ics, respond=("USER_A@example.com", "DECLINED")).replace("\r\n ", "")
+check("respond 改我的 PARTSTAT", "PARTSTAT=DECLINED" in u5 and "user_a@example.com" in u5)
+check("respond 不動他人", u5.count("PARTSTAT=NEEDS-ACTION") == 1)  # user_b 維持
+try:
+    m2kcal.update_event_ics(src_ics, respond=("nobody@example.com", "ACCEPTED"))
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("respond 非與會者丟 M2KError", _r)
 
 print("\n全部通過 ✅")
