@@ -9,6 +9,10 @@
 - `m2k-group-book.user.js` 補 HTML 跳脫（通訊錄姓名/部門塞 innerHTML 前 escape），v0.4.1。
 - 測試補 `parse_ics`/`_linkify`/`_rrule_text`/`M2KError`，共 30 項。
 - 目錄結構調整：`src/`、`tests/`、`userscripts/`、`docs/`；`README-使用說明.md` 改名 `README.md`；移除已完成任務的 `commit.sh`。
+- 新增 OAuth bridge（`--oauth`，`src/m2k_oauth.py`）：OAuth 2.1（DCR+PKCE）＋ /login 驗證
+  CalDAV ＋ 無狀態 AES-GCM 加密 token（伺服器不存憑證），供 claude.ai Connectors（手機/網頁）
+  使用。已實測：metadata/註冊/authorize 轉導/登入頁/假憑證拒絕/無 token 401/Bearer 全鏈路。
+  另確認 `mail.gss.com.tw` 為公網可達（219.87.91.68），部署只需公網 HTTPS 主機。
 
 ## 專案目標
 把難用的公司 m2k 信箱行事曆（Openfind Mail2000）變好用：CLI 查詢/建立會議、
