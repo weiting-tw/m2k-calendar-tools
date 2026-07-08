@@ -69,22 +69,35 @@ function step(dir: 1 | -1) {
 }
 
 // ---------- 資料 ----------
-async function fetchData(): Promise<void> {
+let fetchSeq = 0;  // 序號：丟棄慢到的舊回應，避免快速切換時舊資料蓋掉新畫面
+
+async function fetchData(force = false): Promise<void> {
   const { start, end } = rangeFor(view, anchor);
+  // 目前快取已涵蓋要顯示的範圍就直接渲染（日/週翻頁大多免重抓）
+  if (!force && data
+      && dstr(start) >= data.range.start && dstr(end) <= data.range.end) {
+    render();
+    return;
+  }
+  // 抓比顯示範圍大的窗口（前後各 7 天），降低工具呼叫次數
+  const fs = view === "month" ? start : addDays(start, -7);
+  const fe = view === "month" ? end : addDays(end, 7);
+  const seq = ++fetchSeq;
   loading = true; render();
   try {
     const res = await app.callServerTool({
       name: "calendar_data",
-      arguments: { start: dstr(start), end: dstr(end) },
+      arguments: { start: dstr(fs), end: dstr(fe) },
     });
+    if (seq !== fetchSeq) return;  // 已有更新的請求在跑，這筆作廢
     const sc = extractCalData(res);
     if (sc?.error) toast("讀取失敗：" + sc.error, true);
     else if (sc?.events) data = sc;
     else toast("讀取失敗：" + firstText(res), true);
   } catch (e) {
-    toast("讀取失敗：" + String(e), true);
+    if (seq === fetchSeq) toast("讀取失敗：" + String(e), true);
   } finally {
-    loading = false; render();
+    if (seq === fetchSeq) { loading = false; render(); }
   }
 }
 
@@ -350,7 +363,7 @@ function attachDrag(b: HTMLElement, ev: Ev) {
       if (txt.startsWith("錯誤")) toast(txt, true);
       else if (txt.includes("⚠")) toast("已移動，但與其他行程重疊", false);
       else toast("已更新時間");
-      fetchData();
+      fetchData(true);
     };
     b.addEventListener("pointermove", onMove);
     b.addEventListener("pointerup", onUp);
@@ -443,7 +456,7 @@ function openDetail(ev: Ev) {
         if (txt.startsWith("錯誤")) { toast(txt, true); b.disabled = false; return; }
         toast("已更新出席狀態（不會通知召集人）");
         card.closest(".ov")?.remove();
-        fetchData();
+        fetchData(true);
       };
       row.appendChild(b);
     }
@@ -465,7 +478,7 @@ function openDetail(ev: Ev) {
       if (txt.startsWith("錯誤")) { toast(txt, true); add.disabled = false; add.textContent = "加入"; return; }
       toast("已加入（不會自動寄通知信）");
       card.closest(".ov")?.remove();
-      fetchData();
+      fetchData(true);
     };
     row.append(inp, add);
     card.appendChild(row);
@@ -489,7 +502,7 @@ function openDetail(ev: Ev) {
     if (txt.startsWith("錯誤")) { toast(txt, true); del.disabled = false; del.textContent = "刪除"; delete del.dataset.arm; return; }
     toast("已刪除");
     ov.remove();
-    fetchData();
+    fetchData(true);
   };
   const edit = el("button", "btn primary", "編輯") as HTMLButtonElement;
   edit.onclick = () => { ov.remove(); openForm(ev); };
@@ -582,7 +595,7 @@ function openForm(ev: Ev | null, presetStart?: Date) {
       if (txt.startsWith("錯誤")) { toast(txt, true); save.disabled = false; save.textContent = ev ? "儲存變更" : "建立"; return; }
       toast(ev ? "已更新" : "已建立");
       ov.remove();
-      fetchData();
+      fetchData(true);
     } catch (e) {
       toast(String(e), true);
       save.disabled = false; save.textContent = ev ? "儲存變更" : "建立";
@@ -656,7 +669,7 @@ app.ontoolresult = (result) => {
   const sc = result.structuredContent as (CalData & { error?: string }) | undefined;
   if (sc?.error) { loading = false; render(); toast("讀取失敗：" + sc.error, true); }
   else if (sc?.events) { data = sc; loading = false; render(); }
-  else fetchData();
+  else fetchData(true);  // 可能是模型做了異動（book/update…），強制重抓
 };
 
 app.connect().then(() => {
