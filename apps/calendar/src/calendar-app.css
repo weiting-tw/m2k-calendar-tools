@@ -15,6 +15,7 @@ body {
   background: var(--bg); color: var(--tx); font-size: 13px;
 }
 .cal { display: flex; flex-direction: column; height: 480px; border: 1px solid var(--bd); border-radius: var(--rad); overflow: hidden; }
+.cal.fs { height: calc(100vh - 18px); }
 .cal-hdr { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--bd); background: var(--bg2); }
 .cal-title { font-weight: 600; font-size: 14px; }
 .cal-nav { display: flex; gap: 4px; }
@@ -23,6 +24,7 @@ body {
 .btn.on { background: var(--ac); color: #fff; border-color: var(--ac); }
 .btn.primary { background: var(--ac); color: #fff; border-color: var(--ac); }
 .btn:disabled { opacity: .6; cursor: progress; }
+.btn.danger { color: #dc2626; border-color: #dc2626; }
 .cal-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cal-loading { padding: 40px; text-align: center; color: var(--tx2); }
 
@@ -45,6 +47,11 @@ body {
 .wk-ev:hover { background: color-mix(in srgb, var(--ac) 24%, var(--bg)); }
 .wk-ev-t { font-weight: 600; }
 .wk-ev-l { color: var(--tx2); }
+.wk-ev.declined, .chip.declined { opacity: .45; text-decoration: line-through; }
+.wk-ev.dragging { opacity: .75; z-index: 5; box-shadow: 0 4px 12px rgba(0,0,0,.3); }
+.wk-ev-rs { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; cursor: ns-resize; }
+.wk-day-h.wknd, .wk-col.wknd, .mo-cell.wknd { background: color-mix(in srgb, var(--tx2) 6%, transparent); }
+.wk-col.today { background: color-mix(in srgb, var(--ac) 4%, transparent); }
 
 /* 月檢視 */
 .mo { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -74,7 +81,7 @@ body {
 .rsvp input { flex: 1; border: 1px solid var(--bd); border-radius: 6px; padding: 5px 8px; font-size: 12px; background: var(--bg); color: var(--tx); min-width: 0; }
 .frow { display: flex; gap: 8px; margin: 6px 0; align-items: flex-start; }
 .flab { width: 52px; padding-top: 6px; color: var(--tx2); flex: none; }
-.frow input, .frow textarea { flex: 1; border: 1px solid var(--bd); border-radius: 6px; padding: 5px 8px; font-size: 13px; background: var(--bg); color: var(--tx); font-family: inherit; min-width: 0; }
+.frow input, .frow textarea, .frow select { flex: 1; border: 1px solid var(--bd); border-radius: 6px; padding: 5px 8px; font-size: 13px; background: var(--bg); color: var(--tx); font-family: inherit; min-width: 0; }
 .frow textarea { min-height: 48px; resize: vertical; }
 .note { font-size: 11px; color: var(--tx2); margin-top: 6px; }
 .toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: var(--tx); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 12px; z-index: 20; max-width: 90vw; }

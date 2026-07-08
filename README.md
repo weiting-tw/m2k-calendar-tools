@@ -92,10 +92,14 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 ## 四、MCP server（讓 Claude 直接查行程 / 建會議）
 
-`src/m2k_mcp_server.py` 提供工具：`list_calendars`、`agenda`、`list_events`、`book`、`update_event`
-（修改既有會議的標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位）、
-`respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、
-`show_calendar`（互動行事曆 UI，見下）。
+`src/m2k_mcp_server.py` 提供工具：
+- 查詢：`agenda`、`list_events`、`search_events`（關鍵字搜標題/地點/描述）、
+  `find_free_slots`（free-busy 找自己的空檔）、`list_calendars`
+- 異動：`book`（支援 repeat 重複會議與 reminder_minutes 提醒；時段重疊會附警告）、
+  `update_event`（改標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位；重複會議改整串）、
+  `respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、
+  `delete_event`（刪除，重複會議刪整串）
+- UI：`show_calendar`（互動行事曆，見下）
 
 **MCP App 行事曆 UI**：支援 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) 的客戶端
 （如 Claude）呼叫 `show_calendar` 時會直接在對話中渲染互動行事曆——週/月檢視、點事件看

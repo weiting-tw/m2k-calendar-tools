@@ -165,4 +165,32 @@ except m2kcal.M2KError:
     _r = True
 check("respond 非與會者丟 M2KError", _r)
 
+# 6) build_ics: RRULE 與 VALARM
+ics_r = m2kcal.build_ics("週會", s, e, uid="U10", stamp="Z",
+                         rrule="FREQ=WEEKLY;UNTIL=20261231T155959Z", reminder_minutes=15)
+check("RRULE 寫入", "RRULE:FREQ=WEEKLY;UNTIL=20261231T155959Z" in ics_r)
+check("VALARM 寫入", "BEGIN:VALARM" in ics_r and "TRIGGER:-PT15M" in ics_r
+      and ics_r.index("BEGIN:VALARM") < ics_r.index("END:VEVENT"))
+check("無 reminder 無 VALARM", "VALARM" not in ics)
+
+# 7) parse_freebusy + free_slots（空檔計算）
+fb_text = "\r\n".join([
+    "BEGIN:VCALENDAR", "BEGIN:VFREEBUSY",
+    "FREEBUSY:20260708T020000Z/20260708T023000Z",       # 台北 10:00–10:30
+    "FREEBUSY:20260708T054500Z/20260708T081500Z,20260708T070000Z/20260708T100000Z",  # 13:45–18:00（重疊合併）
+    "END:VFREEBUSY", "END:VCALENDAR"])
+busy = m2kcal.parse_freebusy(fb_text)
+check("parse_freebusy 筆數", len(busy) == 3)
+check("parse_freebusy UTC→台北", busy[0][0] == dt.datetime(2026, 7, 8, 10, 0))
+slots = m2kcal.free_slots(busy, dt.datetime(2026, 7, 8), dt.datetime(2026, 7, 9),
+                          duration_min=60, day_start="09:00", day_end="18:00")
+# 忙碌 10:00–10:30、13:45–18:00 → 空檔 09:00–10:00、10:30–13:45
+check("free_slots 找到 2 段", len(slots) == 2)
+check("free_slots 第一段", slots[0] == (dt.datetime(2026, 7, 8, 9, 0), dt.datetime(2026, 7, 8, 10, 0)))
+check("free_slots 第二段", slots[1] == (dt.datetime(2026, 7, 8, 10, 30), dt.datetime(2026, 7, 8, 13, 45)))
+check("free_slots 週末跳過", m2kcal.free_slots(
+    [], dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13), 60) == [])  # 7/11 六 7/12 日
+check("free_slots 含週末", len(m2kcal.free_slots(
+    [], dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13), 60, include_weekends=True)) == 2)
+
 print("\n全部通過 ✅")
