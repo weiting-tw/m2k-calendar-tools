@@ -25,7 +25,7 @@ const WK = ["日", "一", "二", "三", "四", "五", "六"];
 const HOUR_H = 44;          // 週檢視每小時高度(px)
 const DAY_START_SCROLL = 8; // 預設捲到 08:00
 
-let view: "week" | "month" = "week";
+let view: "day" | "week" | "month" = "week";
 let anchor = new Date();    // 目前檢視的錨點日期
 let data: CalData | null = null;
 let loading = false;
@@ -51,10 +51,21 @@ const toLocalInput = (d: Date) => `${dstr(d)}T${hhmm(d)}`;
 const fromLocalInput = (s: string) => s.replace("T", " ");
 
 function rangeFor(v: typeof view, a: Date): { start: Date; end: Date } {
+  if (v === "day") {
+    const s = new Date(a); s.setHours(0, 0, 0, 0);
+    return { start: s, end: addDays(s, 1) };
+  }
   if (v === "week") { const s = weekStart(a); return { start: s, end: addDays(s, 7) }; }
   const first = new Date(a.getFullYear(), a.getMonth(), 1);
   const s = weekStart(first);
   return { start: s, end: addDays(s, 42) };
+}
+
+// ‹ › / 鍵盤導覽的步進：日 ±1、週 ±7、月換真正的月
+function step(dir: 1 | -1) {
+  if (view === "month") anchor = new Date(anchor.getFullYear(), anchor.getMonth() + dir, 1);
+  else anchor = addDays(anchor, (view === "day" ? 1 : 7) * dir);
+  fetchData();
 }
 
 // ---------- 資料 ----------
@@ -66,7 +77,7 @@ async function fetchData(): Promise<void> {
       name: "calendar_data",
       arguments: { start: dstr(start), end: dstr(end) },
     });
-    const sc = res.structuredContent as (CalData & { error?: string }) | undefined;
+    const sc = extractCalData(res);
     if (sc?.error) toast("讀取失敗：" + sc.error, true);
     else if (sc?.events) data = sc;
     else toast("讀取失敗：" + firstText(res), true);
@@ -75,6 +86,18 @@ async function fetchData(): Promise<void> {
   } finally {
     loading = false; render();
   }
+}
+
+// 有些 host 不回傳 structuredContent，退回解析 content 內的 JSON 文字
+function extractCalData(res: unknown): (CalData & { error?: string }) | undefined {
+  const sc = (res as { structuredContent?: unknown }).structuredContent as
+    (CalData & { error?: string }) | undefined;
+  if (sc && (sc.events || sc.error)) return sc;
+  try {
+    const parsed = JSON.parse(firstText(res) || "null");
+    if (parsed && (parsed.events || parsed.error)) return parsed;
+  } catch { /* 非 JSON 文字 */ }
+  return undefined;
 }
 
 function firstText(res: unknown): string {
@@ -97,11 +120,11 @@ function render() {
   wrap.appendChild(renderHeader());
   const body = el("div", "cal-body");
   if (loading && !data) body.appendChild(el("div", "cal-loading", "載入中…"));
-  else if (view === "week") body.appendChild(renderWeek());
-  else body.appendChild(renderMonth());
+  else if (view === "month") body.appendChild(renderMonth());
+  else body.appendChild(renderTimeGrid());
   wrap.appendChild(body);
   root.appendChild(wrap);
-  if (view === "week") {
+  if (view !== "month") {
     const grid = root.querySelector(".wk-scroll");
     if (grid) grid.scrollTop = HOUR_H * DAY_START_SCROLL - 8;
   }
@@ -122,19 +145,22 @@ function renderHeader(): HTMLElement {
     b.onclick = fn; return b;
   };
   nav.append(
-    btn("‹", () => { anchor = addDays(anchor, view === "week" ? -7 : -30); fetchData(); }),
+    btn("‹", () => step(-1)),
     btn("今天", () => { anchor = new Date(); fetchData(); }),
-    btn("›", () => { anchor = addDays(anchor, view === "week" ? 7 : 30); fetchData(); }),
+    btn("›", () => step(1)),
   );
   const { start, end } = rangeFor(view, anchor);
   const title = el("div", "cal-title",
-    view === "week"
-      ? `${start.getFullYear()}年${start.getMonth() + 1}月 ${start.getDate()}日 – ${addDays(end, -1).getMonth() + 1}月${addDays(end, -1).getDate()}日`
-      : `${anchor.getFullYear()}年${anchor.getMonth() + 1}月`);
+    view === "day"
+      ? `${anchor.getFullYear()}年${anchor.getMonth() + 1}月${anchor.getDate()}日（週${WK[anchor.getDay()]}）`
+      : view === "week"
+        ? `${start.getFullYear()}年${start.getMonth() + 1}月 ${start.getDate()}日 – ${addDays(end, -1).getMonth() + 1}月${addDays(end, -1).getDate()}日`
+        : `${anchor.getFullYear()}年${anchor.getMonth() + 1}月`);
   const right = el("div", "cal-nav");
+  const dy = btn("日", () => { view = "day"; fetchData(); }, view === "day" ? "btn on" : "btn");
   const wk = btn("週", () => { view = "week"; fetchData(); }, view === "week" ? "btn on" : "btn");
   const mo = btn("月", () => { view = "month"; fetchData(); }, view === "month" ? "btn on" : "btn");
-  right.append(wk, mo, btn("＋ 新增", () => openForm(null), "btn primary"));
+  right.append(dy, wk, mo, btn("＋ 新增", () => openForm(null), "btn primary"));
   if (canFullscreen) {
     right.appendChild(btn(displayMode === "fullscreen" ? "⤡" : "⤢", async () => {
       const mode = displayMode === "fullscreen" ? "inline" : "fullscreen";
@@ -187,12 +213,15 @@ function layoutDay(evs: Ev[]): Array<{ ev: Ev; col: number; cols: number }> {
   return items.map(({ ev, col, cols }) => ({ ev, col, cols }));
 }
 
-function renderWeek(): HTMLElement {
-  const { start } = rangeFor("week", anchor);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+// 時間格線檢視：日（1 欄）與週（7 欄）共用
+function renderTimeGrid(): HTMLElement {
+  const n = view === "day" ? 1 : 7;
+  const start = view === "day" ? rangeFor("day", anchor).start : rangeFor("week", anchor).start;
+  const days = Array.from({ length: n }, (_, i) => addDays(start, i));
   const today = data ? parseDT(data.today) : new Date();
 
   const cont = el("div", "wk");
+  cont.style.setProperty("--ncols", String(n));
   // 星期列 + 全天列
   const head = el("div", "wk-head");
   head.appendChild(el("div", "wk-gutter"));
@@ -344,7 +373,7 @@ function renderMonth(): HTMLElement {
       + (sameDay(d, today) ? " today" : "")
       + (d.getDay() % 6 === 0 ? " wknd" : ""));
     const num = el("div", "mo-num", String(d.getDate()));
-    num.onclick = () => { anchor = d; view = "week"; fetchData(); };
+    num.onclick = () => { anchor = d; view = "day"; fetchData(); };
     cell.appendChild(num);
     const evs = eventsOfDay(d);
     for (const e of evs.slice(0, 3)) {
@@ -356,7 +385,7 @@ function renderMonth(): HTMLElement {
     }
     if (evs.length > 3) {
       const more = el("div", "mo-more", `還有 ${evs.length - 3} 筆…`);
-      more.onclick = () => { anchor = d; view = "week"; fetchData(); };
+      more.onclick = () => { anchor = d; view = "day"; fetchData(); };
       cell.appendChild(more);
     }
     grid.appendChild(cell);
@@ -594,8 +623,8 @@ document.addEventListener("keydown", (e) => {
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
   if (document.querySelector(".ov")) return;  // 詳情/表單開著時不攔
-  if (e.key === "ArrowLeft") { anchor = addDays(anchor, view === "week" ? -7 : -30); fetchData(); }
-  else if (e.key === "ArrowRight") { anchor = addDays(anchor, view === "week" ? 7 : 30); fetchData(); }
+  if (e.key === "ArrowLeft") step(-1);
+  else if (e.key === "ArrowRight") step(1);
   else if (e.key === "t") { anchor = new Date(); fetchData(); }
 });
 
@@ -614,9 +643,12 @@ app.ontoolinput = (params) => {
   if (a?.start && a?.end) {
     const s = parseDT(a.start), e = parseDT(a.end);
     if (!isNaN(s.getTime()) && !isNaN(e.getTime()))
-      span = Math.round((e.getTime() - s.getTime()) / 86400000);
+      span = Math.max(1, Math.ceil((e.getTime() - s.getTime()) / 86400000));
   }
-  if (span > 10) view = "month";
+  // 依查詢範圍挑檢視：一天 → 日、10 天內 → 週、更長 → 月
+  if (span === 1) view = "day";
+  else if (span > 10) view = "month";
+  else if (span > 1) view = "week";
   loading = true; render();
 };
 
