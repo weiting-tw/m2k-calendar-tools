@@ -495,7 +495,9 @@ def _zulu(t):
 
 
 def _local_wall(t):
-    """台北本地牆鐘時間 (YYYYMMDDTHHMMSS)，配合 TZID 使用。"""
+    """台北本地牆鐘時間 (YYYYMMDDTHHMMSS)，配合 TZID 使用。date 視為當日 00:00。"""
+    if not isinstance(t, dt.datetime):
+        t = dt.datetime(t.year, t.month, t.day)
     tw = dt.timezone(dt.timedelta(hours=8))
     if t.tzinfo is not None:
         t = t.astimezone(tw)
@@ -790,24 +792,19 @@ def _mk_attendee(email):
     return a
 
 
-def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
-                     desc=None, add_attendees=None, remove_attendees=None,
-                     respond=None):
-    """純函式：讀入既有事件的 ICS，套用指定變更後回傳新 ICS 文字（None＝不變）。
-    respond=(email, PARTSTAT)：把該與會者的出席狀態改為 ACCEPTED/DECLINED/TENTATIVE。
-    只動有給的欄位，其餘屬性（RRULE、VALARM、X-…）原樣保留；
-    SEQUENCE +1、更新 DTSTAMP/LAST-MODIFIED。"""
-    from icalendar import Calendar as _ICal, Timezone, TimezoneStandard
+def _wall_prop(t):
+    """台北牆鐘時間 + TZID 參數的 vDatetime（Mail2000 不吃純 UTC/浮動時間）。"""
     from icalendar.prop import vDatetime, vText
-    ical = _ICal.from_ical(ics_text)
-    # Mail2000 存的事件常帶 METHOD:REQUEST，但 CalDAV PUT 禁止 METHOD
-    # （RFC 4791 §4.1），帶著 PUT 回去 SabreDAV 會回 415，必須拿掉。
-    ical.pop("METHOD", None)
-    evs = [c for c in ical.walk("VEVENT")]
-    if not evs:
-        raise M2KError("這筆事件資料裡沒有 VEVENT，無法修改。")
-    ev = evs[0]
+    p = vDatetime(dt.datetime.strptime(_local_wall(t), "%Y%m%dT%H%M%S"))
+    p.params["TZID"] = vText(TZID)
+    return p
 
+
+def _apply_changes(ev, title=None, start=None, end=None, location=None,
+                   desc=None, add_attendees=None, remove_attendees=None,
+                   respond=None):
+    """把欄位變更套到一個 VEVENT component 上（None＝不變）。"""
+    from icalendar.prop import vText
     if title:
         ev.pop("SUMMARY", None)
         ev.add("SUMMARY", title)
@@ -817,28 +814,12 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
     if desc:
         ev.pop("DESCRIPTION", None)
         ev.add("DESCRIPTION", desc)
-
-    def _wall(key, t):
-        # 台北牆鐘時間 + TZID 參數（Mail2000 不吃純 UTC/浮動時間，見 build_ics）
-        p = vDatetime(dt.datetime.strptime(_local_wall(t), "%Y%m%dT%H%M%S"))
-        p.params["TZID"] = vText(TZID)
-        ev.pop(key, None)
-        ev[key] = p
     if start:
-        _wall("DTSTART", start)
+        ev.pop("DTSTART", None)
+        ev["DTSTART"] = _wall_prop(start)
     if end:
-        _wall("DTEND", end)
-    if (start or end) and not list(ical.walk("VTIMEZONE")):
-        tz = Timezone()
-        tz.add("TZID", TZID)
-        std = TimezoneStandard()
-        std.add("DTSTART", dt.datetime(1970, 1, 1))
-        std.add("TZOFFSETFROM", dt.timedelta(hours=8))
-        std.add("TZOFFSETTO", dt.timedelta(hours=8))
-        std.add("TZNAME", "CST")
-        tz.add_component(std)
-        ical.add_component(tz)
-
+        ev.pop("DTEND", None)
+        ev["DTEND"] = _wall_prop(end)
     if respond:
         email, status = respond
         cur = ev.get("ATTENDEE")
@@ -850,7 +831,6 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
                 hit = True
         if not hit:
             raise M2KError(f"{email} 不在此會議的與會者名單中，無法回覆出席狀態。")
-
     if add_attendees or remove_attendees:
         cur = ev.get("ATTENDEE")
         cur = list(cur) if isinstance(cur, list) else ([cur] if cur else [])
@@ -866,17 +846,169 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
         for a in keep:
             ev.add("ATTENDEE", a)
 
-    try:
-        seq = int(ev.get("SEQUENCE", 0))
-    except Exception:
-        seq = 0
+
+def _bump_and_stamp(ev, seq_base=None):
+    """SEQUENCE +1（或以 seq_base+1 設定）並更新 DTSTAMP/LAST-MODIFIED。"""
+    if seq_base is None:
+        try:
+            seq_base = int(ev.get("SEQUENCE", 0))
+        except Exception:
+            seq_base = 0
     ev.pop("SEQUENCE", None)
-    ev.add("SEQUENCE", seq + 1)
+    ev.add("SEQUENCE", seq_base + 1)
     now = dt.datetime.now(dt.timezone.utc)
     for k in ("DTSTAMP", "LAST-MODIFIED"):
         ev.pop(k, None)
         ev.add(k, now)
+
+
+def _parse_event_ics(ics_text):
+    """讀入事件 ICS，回 (ical, 主 VEVENT)。順帶拿掉 METHOD——
+    Mail2000 存的事件常帶 METHOD:REQUEST，但 CalDAV PUT 禁止 METHOD
+    （RFC 4791 §4.1），帶著 PUT 回去 SabreDAV 會回 415。"""
+    from icalendar import Calendar as _ICal
+    ical = _ICal.from_ical(ics_text)
+    ical.pop("METHOD", None)
+    evs = [c for c in ical.walk("VEVENT")]
+    if not evs:
+        raise M2KError("這筆事件資料裡沒有 VEVENT，無法修改。")
+    # 主 VEVENT＝沒有 RECURRENCE-ID 的那個（可能已有單次例外的 VEVENT 並存）
+    master = next((e for e in evs if not e.get("RECURRENCE-ID")), evs[0])
+    return ical, master
+
+
+def _ensure_vtimezone(ical):
+    from icalendar import Timezone, TimezoneStandard
+    if list(ical.walk("VTIMEZONE")):
+        return
+    tz = Timezone()
+    tz.add("TZID", TZID)
+    std = TimezoneStandard()
+    std.add("DTSTART", dt.datetime(1970, 1, 1))
+    std.add("TZOFFSETFROM", dt.timedelta(hours=8))
+    std.add("TZOFFSETTO", dt.timedelta(hours=8))
+    std.add("TZNAME", "CST")
+    tz.add_component(std)
+    ical.add_component(tz)
+
+
+def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
+                     desc=None, add_attendees=None, remove_attendees=None,
+                     respond=None, rrule=None):
+    """純函式：讀入既有事件的 ICS，套用指定變更後回傳新 ICS 文字（None＝不變）。
+    respond=(email, PARTSTAT)：把該與會者的出席狀態改為 ACCEPTED/DECLINED/TENTATIVE。
+    rrule：None＝不變；""＝移除重複規則；'FREQ=…'＝改寫重複規則。
+    只動有給的欄位，其餘屬性（VALARM、X-…）原樣保留；
+    SEQUENCE +1、更新 DTSTAMP/LAST-MODIFIED。"""
+    ical, ev = _parse_event_ics(ics_text)
+    _apply_changes(ev, title, start, end, location, desc,
+                   add_attendees, remove_attendees, respond)
+    if rrule is not None:
+        from icalendar.prop import vRecur
+        ev.pop("RRULE", None)
+        if rrule:
+            ev.add("RRULE", vRecur.from_ical(rrule))
+    if start or end:
+        _ensure_vtimezone(ical)
+    _bump_and_stamp(ev)
     return ical.to_ical().decode("utf-8")
+
+
+def detach_occurrence_ics(ics_text, occurrence, new_uid, title=None, start=None,
+                          end=None, location=None, desc=None,
+                          add_attendees=None, remove_attendees=None):
+    """純函式：把重複會議的某一次（occurrence＝該次開始時間）拆成
+    「獨立事件」的 ICS（新 UID、無 RRULE），可同時套用變更。
+    背景：Mail2000 不支援 RECURRENCE-ID 單次例外（已實測——例外排主事件
+    後整包被拒、排前面會毀掉整個系列），所以「只改某一次」用
+    「EXDATE 剔除該次＋另建獨立事件」實作，webmail 顯示效果等同。"""
+    import copy
+    from icalendar import Calendar as _ICal
+    ical, master = _parse_event_ics(ics_text)
+    if not master.get("RRULE"):
+        raise M2KError("這不是重複會議，直接用一般修改即可（不用指定 occurrence）。")
+    out = _ICal()
+    out.add("PRODID", "-//m2kcal//CalDAV CLI//EN")
+    out.add("VERSION", "2.0")
+    _ensure_vtimezone(out)
+    ev = copy.deepcopy(master)
+    for k in ("RRULE", "EXDATE", "RECURRENCE-ID", "UID"):
+        ev.pop(k, None)
+    ev.add("UID", new_uid)
+    try:
+        dur = master.get("DTEND").dt - master.get("DTSTART").dt
+    except Exception:
+        dur = dt.timedelta(hours=1)
+    ev["DTSTART"] = _wall_prop(occurrence)
+    ev["DTEND"] = _wall_prop(occurrence + dur)
+    _apply_changes(ev, title, start, end, location, desc,
+                   add_attendees, remove_attendees)
+    _bump_and_stamp(ev, seq_base=-1)  # 新事件 SEQUENCE:0
+    out.add_component(ev)
+    return out.to_ical().decode("utf-8")
+
+
+def add_exdate_ics(ics_text, occurrence):
+    """純函式：把重複會議的某一次（occurrence＝該次開始時間）從系列中剔除
+    （主事件加 EXDATE；若該次已有例外 VEVENT 一併移除）。"""
+    ical, master = _parse_event_ics(ics_text)
+    if not master.get("RRULE"):
+        raise M2KError("這不是重複會議，直接刪除整筆即可（不用指定 occurrence）。")
+    occ_key = _local_wall(occurrence)
+    for e in list(ical.walk("VEVENT")):
+        rid = e.get("RECURRENCE-ID")
+        if rid is not None and _local_wall(rid.dt) == occ_key:
+            ical.subcomponents.remove(e)
+    master.add("EXDATE", _wall_prop(occurrence))
+    _bump_and_stamp(master)
+    return ical.to_ical().decode("utf-8")
+
+
+def imip_ics(ics_text, method):
+    """純函式：把事件 ICS 轉成 iMIP 邀請內容——設 VCALENDAR 的 METHOD
+    （邀請/更新＝REQUEST、取消＝CANCEL；CANCEL 會在 VEVENT 加 STATUS:CANCELLED）。"""
+    method = method.upper()
+    lines = [l for l in ics_text.replace("\r\n", "\n").split("\n")
+             if l and not l.startswith("METHOD:")
+             and not (method == "CANCEL" and l.startswith("STATUS:"))]
+    out = []
+    for l in lines:
+        out.append(l)
+        if l.startswith("VERSION:"):
+            out.append("METHOD:" + method)
+        if method == "CANCEL" and l == "BEGIN:VEVENT":
+            out.append("STATUS:CANCELLED")
+    return "\r\n".join(out) + "\r\n"
+
+
+def send_invite(user, pwd, to, subject, body, ics_text, host=None):
+    """用使用者自己的 SMTP 身分寄 iMIP 會議邀請/更新/取消信（RFC 6047）。
+    Mail2000 SMTP 465/SSL 吃應用程式專用密碼（已實測）。回收件人數。"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    to = [t.strip() for t in to if t.strip()]
+    if not to:
+        return 0
+    m = re.search(r"^METHOD:(\S+)", ics_text, re.M)
+    method = m.group(1) if m else "REQUEST"
+    msg = MIMEMultipart("alternative")
+    msg["From"] = user
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    msg.attach(MIMEText(ics_text, f"calendar; method={method}", "utf-8"))
+    s = smtplib.SMTP_SSL(host or os.environ.get("M2K_SMTP_HOST", DEFAULT_IMAP_HOST),
+                         465, timeout=20)
+    try:
+        s.login(user, pwd)
+        s.sendmail(user, to, msg.as_string())
+    finally:
+        try:
+            s.quit()
+        except Exception:
+            pass
+    return len(to)
 
 
 def find_event_by_uid(cal, uid):

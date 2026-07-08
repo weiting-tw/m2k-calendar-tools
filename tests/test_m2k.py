@@ -250,4 +250,42 @@ with tempfile.TemporaryDirectory() as td:
     check("通訊錄檔可餵 match_contacts",
           m2kcal.match_contacts(d1, "user")[0][1] in d1)
 
+# 11) 重複會議進階：改規則 / 拆單次 / 剔除單次 / iMIP
+rsrc = m2kcal.build_ics("週會", s, e, attendees=["user_a@example.com"],
+                        organizer="owner@example.com", uid="R1", stamp="Z",
+                        rrule="FREQ=WEEKLY;UNTIL=20260930T155959Z")
+ru = m2kcal.update_event_ics(rsrc, rrule="FREQ=MONTHLY").replace("\r\n ", "")
+check("update 改重複規則", "FREQ=MONTHLY" in ru and "WEEKLY" not in ru)
+check("update 取消重複", "RRULE" not in m2kcal.update_event_ics(rsrc, rrule=""))
+check("update 不動規則", "FREQ=WEEKLY" in m2kcal.update_event_ics(rsrc, title="x"))
+
+occ = dt.datetime(2026, 7, 17, 14, 0)
+det = m2kcal.detach_occurrence_ics(rsrc, occ, "NEW1",
+                                   title="這次改地點", location="別館").replace("\r\n ", "")
+check("拆單次：新 UID 無 RRULE", "UID:NEW1" in det and "RRULE" not in det
+      and "RECURRENCE-ID" not in det)
+check("拆單次：時間＝該次＋原長度", "DTSTART;TZID=Asia/Taipei:20260717T140000" in det
+      and "DTEND;TZID=Asia/Taipei:20260717T150000" in det)
+check("拆單次：變更套用且與會者保留", "SUMMARY:這次改地點" in det
+      and "LOCATION:別館" in det and "user_a@example.com" in det)
+check("拆單次：SEQUENCE 歸零", "SEQUENCE:0" in det)
+try:
+    m2kcal.detach_occurrence_ics(m2kcal.build_ics("普通", s, e, uid="P1", stamp="Z"),
+                                 occ, "N2")
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("拆單次：非重複會議丟 M2KError", _r)
+
+exd = m2kcal.add_exdate_ics(rsrc, occ).replace("\r\n ", "")
+check("剔除單次：EXDATE 寫入", "EXDATE;TZID=Asia/Taipei:20260717T140000" in exd)
+check("剔除單次：SEQUENCE+1", "SEQUENCE:1" in exd)
+
+inv = m2kcal.imip_ics(rsrc, "request")
+check("iMIP REQUEST 位置正確", "METHOD:REQUEST" in inv
+      and inv.index("METHOD") < inv.index("BEGIN:VEVENT"))
+cxl = m2kcal.imip_ics(rsrc, "cancel")
+check("iMIP CANCEL 帶 STATUS", "METHOD:CANCEL" in cxl and "STATUS:CANCELLED" in cxl)
+check("iMIP 冪等（不重複 METHOD）", m2kcal.imip_ics(inv, "REQUEST").count("METHOD:") == 1)
+
 print("\n全部通過 ✅")
