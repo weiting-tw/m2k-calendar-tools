@@ -46,7 +46,8 @@ async def test_stdio():
             ui_tools = {t.name: (t.meta or {}).get("ui", {})
                         for t in (await s.list_tools()).tools if t.meta}
             assert ui_tools["show_calendar"]["resourceUri"] == "ui://m2k-calendar/calendar.html"
-            assert ui_tools["calendar_data"]["visibility"] == ["app"]
+            assert ui_tools["calendar_data"]["resourceUri"] == "ui://m2k-calendar/calendar.html"
+            assert "visibility" not in ui_tools["calendar_data"]  # 不能是 app-only，見 server 註解
             # 行事曆查詢/異動工具都掛 UI（客戶端支援 MCP Apps 時渲染行事曆畫面）
             for n in ("agenda", "list_events", "book", "update_event",
                       "respond_event", "delete_event"):

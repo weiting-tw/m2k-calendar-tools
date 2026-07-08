@@ -239,10 +239,12 @@ def _addr(v):
 def _event_rows(events):
     """整理成 dict 清單，含所有可顯示欄位，依開始時間排序（時間轉台北）。"""
     def norm(x):
+        """一律轉成台北牆鐘的 naive datetime——全天事件（date）天生 naive，
+        aware 不去掉 tzinfo 的話混在一起 sort 會 TypeError。"""
         if x is None:
             return None
         if isinstance(x, dt.datetime):
-            return x.astimezone(TW_TZ) if x.tzinfo else x
+            return x.astimezone(TW_TZ).replace(tzinfo=None) if x.tzinfo else x
         return dt.datetime(x.year, x.month, x.day)
 
     rows = []

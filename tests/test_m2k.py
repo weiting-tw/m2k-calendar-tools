@@ -193,4 +193,21 @@ check("free_slots 週末跳過", m2kcal.free_slots(
 check("free_slots 含週末", len(m2kcal.free_slots(
     [], dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13), 60, include_weekends=True)) == 2)
 
+# 8) events_json：aware（帶時區）與全天（date、naive）混在一起要能排序
+from types import SimpleNamespace
+from icalendar import Calendar as _IC
+def _fake(ics_text):
+    c = _IC.from_ical(ics_text)
+    return SimpleNamespace(icalendar_component=list(c.walk("VEVENT"))[0])
+timed = m2kcal.build_ics("有時間", s, e, uid="U20", stamp="Z")
+allday = "\r\n".join([
+    "BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:U21", "SUMMARY:全天",
+    "DTSTART;VALUE=DATE:20260709", "DTEND;VALUE=DATE:20260710",
+    "END:VEVENT", "END:VCALENDAR"])
+rows = m2kcal.events_json([_fake(allday), _fake(timed)])
+check("events_json 混合排序不炸", len(rows) == 2)
+check("events_json 混合排序順序", rows[0]["summary"] == "全天" or rows[0]["start"] <= rows[1]["start"])
+check("events_json 全天格式", any(r["allday"] and r["start"] == "2026-07-09" for r in rows))
+check("events_json aware 轉台北", any(r["start"] == "2026-07-10 14:00" for r in rows))
+
 print("\n全部通過 ✅")

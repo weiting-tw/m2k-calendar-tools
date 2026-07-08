@@ -279,6 +279,8 @@ def show_calendar(start: str = "", days: int = 7, ctx: Context = None) -> dict[s
         return _calendar_payload(s, s + dt.timedelta(days=days), ctx)
     except m2kcal.M2KError as e:
         return {"error": str(e), "events": []}
+    except Exception as e:  # UI 端要能顯示錯誤，不能讓 tool call 直接炸掉
+        return {"error": f"讀取行程失敗：{e}", "events": []}
 
 
 def calendar_data(start: str, end: str, ctx: Context = None) -> dict[str, Any]:
@@ -287,6 +289,8 @@ def calendar_data(start: str, end: str, ctx: Context = None) -> dict[str, Any]:
         return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end), ctx)
     except m2kcal.M2KError as e:
         return {"error": str(e), "events": []}
+    except Exception as e:
+        return {"error": f"讀取行程失敗：{e}", "events": []}
 
 
 def respond_event(uid: str, response: str, ctx: Context = None) -> str:
@@ -401,7 +405,9 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
 def _register_calendar_app(server: "FastMCP") -> None:
     server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
                 structured_output=True)(show_calendar)
-    server.tool(meta={"ui": {"resourceUri": CAL_UI_URI, "visibility": ["app"]}},
+    # calendar_data 不設 visibility:["app"]：部分 host（如 Claude Desktop）
+    # 會擋 App 對「模型不可見」工具的呼叫，導致 UI 翻頁拿不到資料
+    server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
                 structured_output=True)(calendar_data)
 
     @server.resource(CAL_UI_URI, name="m2k 行事曆 UI",
