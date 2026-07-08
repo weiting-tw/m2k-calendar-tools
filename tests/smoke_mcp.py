@@ -40,9 +40,9 @@ async def test_stdio():
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
             assert tools == ["agenda", "book", "calendar_data", "delete_event",
-                             "find_free_slots", "list_calendars", "list_events",
-                             "respond_event", "search_events", "show_calendar",
-                             "update_event"], tools
+                             "find_free_slots", "find_person", "list_calendars",
+                             "list_events", "respond_event", "search_events",
+                             "show_calendar", "update_event"], tools
             ui_tools = {t.name: (t.meta or {}).get("ui", {})
                         for t in (await s.list_tools()).tools if t.meta}
             uri = ui_tools["show_calendar"]["resourceUri"]

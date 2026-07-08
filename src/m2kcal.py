@@ -554,6 +554,64 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
     return "\r\n".join(lines) + "\r\n"
 
 
+# ---------- 聯絡人（從行事曆歷史萃取，供模糊人名查 email） ----------
+def collect_contacts(cal, start=None, end=None):
+    """掃行事曆事件的與會者/召集人，回 {email: {"name","count","last"}}。
+    公司通訊錄需 webmail session 拿不到；跟你開過會的人都在這裡。"""
+    start = start or dt.datetime.now() - dt.timedelta(days=365)
+    end = end or dt.datetime.now() + dt.timedelta(days=180)
+    out = {}
+    for ev in cal.search(start=start, end=end, event=True):
+        c = ev.icalendar_component
+        when = ""
+        try:
+            when = c.get("dtstart").dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        people = []
+        a = c.get("attendee")
+        if a:
+            people += [_addr(x) for x in (a if isinstance(a, list) else [a])]
+        if c.get("organizer"):
+            people.append(_addr(c.get("organizer")))
+        for name, email in people:
+            email = email.strip().lower()
+            if "@" not in email:
+                continue
+            rec = out.setdefault(email, {"name": "", "count": 0, "last": ""})
+            rec["count"] += 1
+            if name and name != email and not rec["name"]:
+                rec["name"] = name
+            if when > rec["last"]:
+                rec["last"] = when
+    return out
+
+
+def match_contacts(contacts, query):
+    """模糊比對名字：完整 local-part > 前綴（含底線分段）> 包含 > 顯示名包含。
+    回傳 [(score, email, rec)]，分數與出現次數高者在前。"""
+    q = query.strip().lower()
+    if not q:
+        return []
+    res = []
+    for email, rec in contacts.items():
+        local = email.split("@")[0]
+        name = (rec.get("name") or "").lower()
+        if local == q:
+            score = 100
+        elif local.startswith(q) or any(p.startswith(q) for p in local.split("_")):
+            score = 80
+        elif q in local:
+            score = 60
+        elif q in name:
+            score = 50
+        else:
+            continue
+        res.append((score, email, rec))
+    res.sort(key=lambda t: (-t[0], -t[2]["count"]))
+    return res
+
+
 # ---------- free-busy / 空檔計算 ----------
 def parse_freebusy(text):
     """解析 VFREEBUSY 回應中的 FREEBUSY 行（UTC period），

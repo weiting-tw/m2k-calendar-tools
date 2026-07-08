@@ -53,6 +53,7 @@ issuer 必須是用戶端可達的 HTTPS 網址（claude.ai 的連線來自 Anth
 import argparse
 import os
 import sys
+import time
 import datetime as dt
 import uuid
 from typing import Any
@@ -331,6 +332,41 @@ def respond_event(uid: str, response: str, ctx: Context = None) -> str:
             "（僅更新你的日曆，不會自動通知召集人）")
 
 
+# 聯絡人快取：掃一年行事曆要幾秒，依使用者 email 快取 15 分鐘
+_CONTACTS_CACHE: dict[str, tuple[float, dict]] = {}
+_CONTACTS_TTL = 900
+
+
+def find_person(names: list[str], ctx: Context = None) -> str:
+    """依（模糊的）名字或暱稱查同事的 email。資料來源是你行事曆近一年
+    出現過的與會者與召集人（公司通訊錄需 webmail 登入，查不到）。
+    使用者提到模糊人名（如「把 pekka 加進會議」）時先用這個查；
+    若有多個候選或查無此人，把結果列給使用者確認，**絕不自行猜測 email**。
+    names 可一次查多個名字。"""
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+        key = auth[1]
+        hit = _CONTACTS_CACHE.get(key)
+        if hit and time.time() - hit[0] < _CONTACTS_TTL:
+            contacts = hit[1]
+        else:
+            contacts = m2kcal.collect_contacts(_cal(auth))
+            _CONTACTS_CACHE[key] = (time.time(), contacts)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    lines = [f"（資料來源：你行事曆近一年出現過的 {len(contacts)} 位聯絡人）"]
+    for n in names:
+        m = m2kcal.match_contacts(contacts, n)
+        if not m:
+            lines.append(f"「{n}」：找不到，請向使用者確認 email。")
+            continue
+        lines.append(f"「{n}」：" + ("" if len(m) == 1 else f"（{len(m)} 個候選，請確認）"))
+        for _score, email, rec in m[:5]:
+            nm = rec["name"] or email.split("@")[0]
+            lines.append(f"  - {nm} <{email}>（出現 {rec['count']} 次，最近 {rec['last'] or '?'}）")
+    return "\n".join(lines)
+
+
 def delete_event(uid: str, ctx: Context = None) -> str:
     """刪除會議（依 uid，取自查詢輸出的 id: 欄位）。無法復原；
     重複會議（RRULE）會刪除整個系列。"""
@@ -431,7 +467,7 @@ def _register_calendar_app(server: "FastMCP") -> None:
             return f.read()
 
 
-TOOLS = (list_calendars, search_events, find_free_slots)
+TOOLS = (list_calendars, search_events, find_free_slots, find_person)
 # 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
 # （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）
 APP_TOOLS = (agenda, list_events, book, update_event, respond_event, delete_event)
