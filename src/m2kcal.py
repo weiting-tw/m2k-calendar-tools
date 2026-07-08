@@ -589,6 +589,79 @@ def collect_contacts(cal, start=None, end=None):
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
+DEFAULT_IMAP_HOST = "mail.gss.com.tw"
+
+
+def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
+    """抓 INBOX＋寄件匣最近 per_folder 封信的 From/To/Cc/Date，
+    回 {email: {"name","count","last"}}（與 collect_contacts 同構）。
+    設計取捨：Mail2000 的 IMAP SEARCH 沒索引（一次文字搜尋 13~15 秒，
+    已實測），所以不按查詢即時搜，改一次抓回本地建池、由呼叫端快取，
+    之後模糊比對零成本。應用程式專用密碼可登 IMAP，共用部署免額外設定。"""
+    import imaplib
+    import email as _email
+    import email.utils as _eutils
+    from email.header import decode_header
+
+    out = {}
+    M = imaplib.IMAP4_SSL(host or os.environ.get("M2K_IMAP_HOST", DEFAULT_IMAP_HOST),
+                          993, timeout=30)
+    try:
+        M.login(user, pwd)
+        folders = ["INBOX"]
+        try:
+            for b in (M.list()[1] or []):
+                s = b.decode("ascii", "replace")
+                if "\\Sent" in s:
+                    folders.append(s.rsplit('"/"', 1)[-1].strip())
+        except Exception:
+            pass
+        for folder in folders:
+            try:
+                typ, data = M.select(folder, readonly=True)
+                total = int(data[0])
+                if not total:
+                    continue
+                rng = f"{max(1, total - per_folder + 1)}:{total}"
+                typ, parts = M.fetch(rng, "(BODY.PEEK[HEADER.FIELDS (FROM TO CC DATE)])")
+            except Exception:
+                continue
+            for part in parts or []:
+                if not (isinstance(part, tuple) and len(part) > 1):
+                    continue
+                msg = _email.message_from_bytes(part[1])
+                day = ""
+                try:
+                    d = _eutils.parsedate_to_datetime(msg.get("Date", ""))
+                    day = d.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+                pairs = _eutils.getaddresses(
+                    (msg.get_all("From") or []) + (msg.get_all("To") or [])
+                    + (msg.get_all("Cc") or []))
+                for nm, em in pairs:
+                    em = em.strip().lower()
+                    if "@" not in em:
+                        continue
+                    try:  # =?UTF-8?…?= 顯示名解碼
+                        nm = str().join(
+                            s.decode(c or "utf-8", "replace") if isinstance(s, bytes) else s
+                            for s, c in decode_header(nm))
+                    except Exception:
+                        pass
+                    rec = out.setdefault(em, {"name": "", "count": 0, "last": ""})
+                    rec["count"] += 1
+                    if nm and not rec["name"]:
+                        rec["name"] = nm.strip()
+                    if day > rec["last"]:
+                        rec["last"] = day
+    finally:
+        try:
+            M.logout()
+        except Exception:
+            pass
+    return out
+
 
 def load_directory_file(path):
     """讀通訊錄匯出檔（webmail 匯出的 vCard 或 CSV/TSV），
