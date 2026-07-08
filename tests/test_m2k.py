@@ -210,4 +210,20 @@ check("events_json 混合排序順序", rows[0]["summary"] == "全天" or rows[0
 check("events_json 全天格式", any(r["allday"] and r["start"] == "2026-07-09" for r in rows))
 check("events_json aware 轉台北", any(r["start"] == "2026-07-10 14:00" for r in rows))
 
+# 9) match_contacts：模糊人名比對
+book_c = {
+    "pekka_chang@example.com": {"name": "pekka_chang", "count": 3, "last": "2026-07-01"},
+    "derek_wang@example.com": {"name": "Derek Wang", "count": 10, "last": "2026-06-20"},
+    "derek_lin@example.com": {"name": "derek_lin", "count": 2, "last": "2026-05-01"},
+    "anne_de@example.com": {"name": "Anne De", "count": 1, "last": "2026-04-01"},
+}
+m = m2kcal.match_contacts(book_c, "pekka")
+check("match 前綴命中", m and m[0][1] == "pekka_chang@example.com")
+m2 = m2kcal.match_contacts(book_c, "derek")
+check("match 多候選依次數排序", len(m2) == 2 and m2[0][1] == "derek_wang@example.com")
+m3 = m2kcal.match_contacts(book_c, "wang")
+check("match 底線分段前綴", any(e == "derek_wang@example.com" for _, e, _ in m3))
+check("match 查無回空", m2kcal.match_contacts(book_c, "nobody") == [])
+check("match 空字串回空", m2kcal.match_contacts(book_c, " ") == [])
+
 print("\n全部通過 ✅")
