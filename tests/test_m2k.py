@@ -226,4 +226,28 @@ check("match 底線分段前綴", any(e == "derek_wang@example.com" for _, e, _ 
 check("match 查無回空", m2kcal.match_contacts(book_c, "nobody") == [])
 check("match 空字串回空", m2kcal.match_contacts(book_c, " ") == [])
 
+# 10) load_directory_file：CSV 與 vCard 匯出檔解析
+import tempfile
+with tempfile.TemporaryDirectory() as td:
+    csvp = os.path.join(td, "dir.csv")
+    with open(csvp, "w", encoding="utf-8") as f:
+        f.write("暱稱,姓,名,信箱,電話\n")
+        f.write("User A,測,甲,user_a@example.com,10001\n")
+        f.write('"User B",測,乙,user_b@example.com,\n')
+        f.write(",,,沒信箱的列,123\n")
+    d1 = m2kcal.load_directory_file(csvp)
+    check("CSV 解析筆數", len(d1) == 2)
+    check("CSV email 小寫鍵", "user_a@example.com" in d1)
+    check("CSV 姓名取最長非 email 欄", d1["user_a@example.com"]["name"] == "User A")
+    vcfp = os.path.join(td, "dir.vcf")
+    with open(vcfp, "w", encoding="utf-8") as f:
+        f.write("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:User C\r\n"
+                "EMAIL;TYPE=INTERNET:User_C@example.com\r\nEND:VCARD\r\n"
+                "BEGIN:VCARD\r\nFN:無信箱\r\nEND:VCARD\r\n")
+    d2 = m2kcal.load_directory_file(vcfp)
+    check("vCard 解析筆數", len(d2) == 1)
+    check("vCard FN + email 小寫", d2.get("user_c@example.com", {}).get("name") == "User C")
+    check("通訊錄檔可餵 match_contacts",
+          m2kcal.match_contacts(d1, "user")[0][1] in d1)
+
 print("\n全部通過 ✅")
