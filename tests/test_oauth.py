@@ -129,4 +129,69 @@ try:
 finally:
     srv._CACHE_MAX_USERS = orig_cap
 
+# 7) 登入失敗節流：達上限回 429、不再打上游；失敗寫入 fail2ban 日誌
+from urllib.parse import urlencode
+
+from mcp.server.auth.provider import AuthorizationParams
+
+calls = {"n": 0}
+
+
+def _boom(auth):
+    calls["n"] += 1
+    raise mo.m2kcal.M2KError("bad password")
+
+
+def mk_post(txn, ip="9.9.9.9"):
+    body = urlencode({"txn": txn, "user": "x", "password": "y"}).encode()
+    scope = {"type": "http", "method": "POST",
+             "headers": [(b"content-type", b"application/x-www-form-urlencoded"),
+                         (b"content-length", str(len(body)).encode())],
+             "query_string": b"", "client": (ip, 1)}
+    sent = {"v": False}
+
+    async def receive():
+        if sent["v"]:
+            return {"type": "http.disconnect"}
+        sent["v"] = True
+        return {"type": "http.request", "body": body, "more_body": False}
+    return Request(scope, receive)
+
+
+client_ok = OAuthClientInformationFull(client_id="client-1",
+                                       redirect_uris=[AnyUrl("http://127.0.0.1/cb")])
+
+
+async def new_txn(p):
+    params_obj = AuthorizationParams(
+        state=None, scopes=["m2k"], code_challenge="c",
+        redirect_uri=AnyUrl("http://127.0.0.1/cb"),
+        redirect_uri_provided_explicitly=True, resource=None)
+    loc = await p.authorize(client_ok, params_obj)
+    return loc.split("txn=")[1]
+
+
+orig_connect = mo.m2kcal.connect
+mo.m2kcal.connect = _boom
+with tempfile.TemporaryDirectory() as td:
+    os.environ["M2K_AUTH_LOG"] = os.path.join(td, "auth.log")
+    try:
+        p3 = mo.M2KOAuthProvider(crypto, clients_path=os.path.join(td, "c.json"))
+        statuses = []
+        for _ in range(mo.FAIL_LIMIT_IP + 2):
+            resp = run(p3.login_submit(mk_post(run(new_txn(p3)))))
+            statuses.append(resp.status_code)
+        check("節流前失敗回 401", statuses[0] == 401)
+        check("達上限後回 429", statuses[-1] == 429 and statuses[-2] == 429)
+        check("429 後不再打上游", calls["n"] == mo.FAIL_LIMIT_IP)
+        with open(os.environ["M2K_AUTH_LOG"]) as f:
+            log = f.read()
+        check("失敗寫入 fail2ban 日誌", log.count("m2k-login-fail ip=9.9.9.9") == mo.FAIL_LIMIT_IP)
+        # 不同 IP 不受同一 IP 的節流影響（X-Forwarded-For 取第一個）
+        resp2 = run(p3.login_submit(mk_post(run(new_txn(p3)), ip="8.8.8.8")))
+        check("其他 IP 不被連坐", resp2.status_code == 401)
+    finally:
+        mo.m2kcal.connect = orig_connect
+        del os.environ["M2K_AUTH_LOG"]
+
 print("\n全部通過 ✅")
