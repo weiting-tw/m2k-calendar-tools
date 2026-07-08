@@ -29,6 +29,8 @@ let view: "week" | "month" = "week";
 let anchor = new Date();    // 目前檢視的錨點日期
 let data: CalData | null = null;
 let loading = false;
+let canFullscreen = false;
+let displayMode = "inline";
 
 const root = document.getElementById("root")!;
 const app = new App({ name: "m2k Calendar", version: "1.0.0" });
@@ -81,9 +83,17 @@ function firstText(res: unknown): string {
 }
 
 // ---------- 畫面 ----------
+function myPartstat(ev: Ev): string {
+  if (!data?.me) return "";
+  const me = data.me.toLowerCase();
+  return ev.attendees.find((a) => a.email.toLowerCase() === me)?.partstat ?? "";
+}
+
+function fmtDT(d: Date): string { return `${dstr(d)} ${hhmm(d)}`; }
+
 function render() {
   root.innerHTML = "";
-  const wrap = el("div", "cal");
+  const wrap = el("div", "cal" + (displayMode === "fullscreen" ? " fs" : ""));
   wrap.appendChild(renderHeader());
   const body = el("div", "cal-body");
   if (loading && !data) body.appendChild(el("div", "cal-loading", "載入中…"));
@@ -125,6 +135,15 @@ function renderHeader(): HTMLElement {
   const wk = btn("週", () => { view = "week"; fetchData(); }, view === "week" ? "btn on" : "btn");
   const mo = btn("月", () => { view = "month"; fetchData(); }, view === "month" ? "btn on" : "btn");
   right.append(wk, mo, btn("＋ 新增", () => openForm(null), "btn primary"));
+  if (canFullscreen) {
+    right.appendChild(btn(displayMode === "fullscreen" ? "⤡" : "⤢", async () => {
+      const mode = displayMode === "fullscreen" ? "inline" : "fullscreen";
+      try {
+        const r = await app.requestDisplayMode({ mode });
+        displayMode = r.mode; render();
+      } catch { /* host 拒絕就算了 */ }
+    }));
+  }
   h.append(nav, title, right);
   return h;
 }
@@ -178,7 +197,8 @@ function renderWeek(): HTMLElement {
   const head = el("div", "wk-head");
   head.appendChild(el("div", "wk-gutter"));
   for (const d of days) {
-    const c = el("div", "wk-day-h" + (sameDay(d, today) ? " today" : ""));
+    const c = el("div", "wk-day-h" + (sameDay(d, today) ? " today" : "")
+      + (d.getDay() % 6 === 0 ? " wknd" : ""));
     c.append(el("div", "wk-dow", `週${WK[d.getDay()]}`), el("div", "wk-date", String(d.getDate())));
     head.appendChild(c);
   }
@@ -209,7 +229,8 @@ function renderWeek(): HTMLElement {
   grid.appendChild(gutter);
 
   for (const d of days) {
-    const col = el("div", "wk-col" + (sameDay(d, today) ? " today" : ""));
+    const col = el("div", "wk-col" + (sameDay(d, today) ? " today" : "")
+      + (d.getDay() % 6 === 0 ? " wknd" : ""));
     for (let h = 1; h < 24; h++) {
       const line = el("div", "wk-line");
       line.style.top = `${h * HOUR_H}px`;
@@ -229,14 +250,20 @@ function renderWeek(): HTMLElement {
       const top = Math.max(0, (Math.max(s.getTime(), d0.getTime()) - d0.getTime()) / 3600000 * HOUR_H);
       const bot = Math.min(24 * HOUR_H,
         (Math.min(e2.getTime(), addDays(d0, 1).getTime()) - d0.getTime()) / 3600000 * HOUR_H);
-      const b = el("div", "wk-ev");
+      const b = el("div", "wk-ev" + (myPartstat(ev) === "DECLINED" ? " declined" : ""));
       b.style.top = `${top}px`;
       b.style.height = `${Math.max(18, bot - top - 2)}px`;
       b.style.left = `calc(${(ci / cols) * 100}% + 1px)`;
       b.style.width = `calc(${(1 / cols) * 100}% - 3px)`;
       b.append(el("div", "wk-ev-t", `${hhmm(s)} ${ev.summary}`));
       if (ev.location) b.append(el("div", "wk-ev-l", `@${ev.location}`));
-      b.onclick = (x) => { x.stopPropagation(); openDetail(ev); };
+      b.onclick = (x) => {
+        x.stopPropagation();
+        if (b.dataset.dragged) { delete b.dataset.dragged; return; }
+        openDetail(ev);
+      };
+      b.ondblclick = (x) => { x.stopPropagation(); openForm(ev); };
+      attachDrag(b, ev);
       col.appendChild(b);
     }
     grid.appendChild(col);
@@ -244,6 +271,62 @@ function renderWeek(): HTMLElement {
   scroll.appendChild(grid);
   cont.appendChild(scroll);
   return cont;
+}
+
+// 週檢視拖曳：整塊拖＝移動（可跨天），拉下緣＝改結束時間；15 分鐘對齊。
+// 重複會議不開放拖曳（修改會動到整個系列，走編輯表單較安全）。
+function attachDrag(b: HTMLElement, ev: Ev) {
+  if (ev.rrule || ev.allday) return;
+  const handle = el("div", "wk-ev-rs");
+  b.appendChild(handle);
+  b.addEventListener("pointerdown", (pd: PointerEvent) => {
+    if (pd.button !== 0) return;
+    const resize = pd.target === handle;
+    const sx = pd.clientX, sy = pd.clientY;
+    const origH = b.offsetHeight;
+    const colW = (b.parentElement as HTMLElement).getBoundingClientRect().width;
+    let dMin = 0, dDay = 0, moved = false;
+    const onMove = (pm: PointerEvent) => {
+      const dx = pm.clientX - sx, dy = pm.clientY - sy;
+      if (!moved && Math.abs(dy) < 6 && Math.abs(dx) < colW / 2) return;
+      if (!moved) { moved = true; b.setPointerCapture(pd.pointerId); b.classList.add("dragging"); }
+      dMin = Math.round((dy / HOUR_H) * 60 / 15) * 15;
+      dDay = resize ? 0 : Math.round(dx / colW);
+      if (resize) b.style.height = `${Math.max(14, origH + (dMin / 60) * HOUR_H)}px`;
+      else b.style.transform = `translate(${dDay * colW}px, ${(dMin / 60) * HOUR_H}px)`;
+    };
+    const onUp = async () => {
+      b.removeEventListener("pointermove", onMove);
+      b.removeEventListener("pointerup", onUp);
+      b.removeEventListener("pointercancel", onUp);
+      if (!moved) return;
+      b.dataset.dragged = "1";
+      b.classList.remove("dragging");
+      if (dMin === 0 && dDay === 0) { b.style.transform = ""; b.style.height = `${origH}px`; return; }
+      const s0 = parseDT(ev.start);
+      const e0 = parseDT(ev.end || ev.start);
+      const shift = dDay * 86400000 + dMin * 60000;
+      const args: Record<string, unknown> = { uid: ev.uid };
+      if (resize) {
+        const ne = new Date(e0.getTime() + dMin * 60000);
+        if (ne.getTime() - s0.getTime() < 15 * 60000) { b.style.height = `${origH}px`; return; }
+        args.end = fmtDT(ne);
+      } else {
+        args.start = fmtDT(new Date(s0.getTime() + shift));
+        args.end = fmtDT(new Date(e0.getTime() + shift));
+      }
+      const res = await app.callServerTool({ name: "update_event", arguments: args })
+        .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
+      const txt = firstText(res);
+      if (txt.startsWith("錯誤")) toast(txt, true);
+      else if (txt.includes("⚠")) toast("已移動，但與其他行程重疊", false);
+      else toast("已更新時間");
+      fetchData();
+    };
+    b.addEventListener("pointermove", onMove);
+    b.addEventListener("pointerup", onUp);
+    b.addEventListener("pointercancel", onUp);
+  });
 }
 
 function renderMonth(): HTMLElement {
@@ -258,13 +341,15 @@ function renderMonth(): HTMLElement {
     const d = addDays(start, i);
     const cell = el("div", "mo-cell"
       + (d.getMonth() !== anchor.getMonth() ? " other" : "")
-      + (sameDay(d, today) ? " today" : ""));
+      + (sameDay(d, today) ? " today" : "")
+      + (d.getDay() % 6 === 0 ? " wknd" : ""));
     const num = el("div", "mo-num", String(d.getDate()));
     num.onclick = () => { anchor = d; view = "week"; fetchData(); };
     cell.appendChild(num);
     const evs = eventsOfDay(d);
     for (const e of evs.slice(0, 3)) {
-      const chip = el("div", "chip" + (e.allday ? " allday" : ""),
+      const chip = el("div", "chip" + (e.allday ? " allday" : "")
+        + (myPartstat(e) === "DECLINED" ? " declined" : ""),
         (e.allday ? "" : hhmm(parseDT(e.start)) + " ") + e.summary);
       chip.onclick = () => openDetail(e);
       cell.appendChild(chip);
@@ -361,11 +446,27 @@ function openDetail(ev: Ev) {
     card.appendChild(d);
   }
   const acts = el("div", "acts");
+  const del = el("button", "btn danger", "刪除") as HTMLButtonElement;
+  del.onclick = async () => {
+    if (del.dataset.arm !== "1") {
+      del.dataset.arm = "1";
+      del.textContent = ev.rrule ? "確認刪除整個系列？" : "確認刪除？";
+      return;
+    }
+    del.disabled = true; del.textContent = "刪除中…";
+    const res = await app.callServerTool({ name: "delete_event", arguments: { uid: ev.uid } })
+      .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
+    const txt = firstText(res);
+    if (txt.startsWith("錯誤")) { toast(txt, true); del.disabled = false; del.textContent = "刪除"; delete del.dataset.arm; return; }
+    toast("已刪除");
+    ov.remove();
+    fetchData();
+  };
   const edit = el("button", "btn primary", "編輯") as HTMLButtonElement;
   edit.onclick = () => { ov.remove(); openForm(ev); };
   const close = el("button", "btn", "關閉") as HTMLButtonElement;
   close.onclick = () => ov.remove();
-  acts.append(edit, close);
+  acts.append(del, edit, close);
   card.appendChild(acts);
   ov.appendChild(card);
 }
@@ -395,6 +496,23 @@ function openForm(ev: Ev | null, presetStart?: Date) {
   atts.value = ev ? ev.attendees.map((a) => a.email).join(", ") : "";
   card.append(f("標題", title), f("開始", start), f("結束", end), f("地點", loc),
     f("描述", desc), f("與會者", atts));
+  // 重複與提醒只在建立時提供（book 支援；改既有事件的 RRULE 走文字指令較安全）
+  const repeat = el("select") as HTMLSelectElement;
+  const until = inp("date");
+  const reminder = el("select") as HTMLSelectElement;
+  if (!ev) {
+    for (const [v, t] of [["", "不重複"], ["daily", "每天"], ["weekly", "每週"], ["monthly", "每月"]] as const) {
+      const o = el("option", "", t) as HTMLOptionElement; o.value = v; repeat.appendChild(o);
+    }
+    for (const [v, t] of [["0", "無"], ["5", "5 分鐘前"], ["10", "10 分鐘前"], ["15", "15 分鐘前"], ["30", "30 分鐘前"], ["60", "1 小時前"]] as const) {
+      const o = el("option", "", t) as HTMLOptionElement; o.value = v; reminder.appendChild(o);
+    }
+    const rrow = el("label", "frow");
+    rrow.append(el("span", "flab", "重複"), repeat, until);
+    until.style.display = "none";
+    repeat.onchange = () => { until.style.display = repeat.value ? "" : "none"; };
+    card.append(rrow, f("提醒", reminder));
+  }
   const note = el("div", "note", "註：CalDAV 無排程，異動不會自動寄通知信。");
   card.appendChild(note);
   const acts = el("div", "acts");
@@ -412,6 +530,8 @@ function openForm(ev: Ev | null, presetStart?: Date) {
           title: title.value.trim(), start: fromLocalInput(start.value),
           end: end.value ? fromLocalInput(end.value) : "",
           location: loc.value.trim(), description: desc.value, attendees: emails,
+          repeat: repeat.value, repeat_until: repeat.value ? until.value : "",
+          reminder_minutes: parseInt(reminder.value || "0", 10),
         }});
       } else {
         const old = new Set(ev.attendees.map((a) => a.email.toLowerCase()));
@@ -463,7 +583,21 @@ function handleHostContext(ctx: McpUiHostContext) {
     const { top, right, bottom, left } = ctx.safeAreaInsets;
     document.body.style.padding = `${top}px ${right}px ${bottom}px ${left}px`;
   }
+  const fs = !!ctx.availableDisplayModes?.includes("fullscreen");
+  const dm = ctx.displayMode ?? displayMode;
+  if (fs !== canFullscreen || dm !== displayMode) {
+    canFullscreen = fs; displayMode = dm; render();
+  }
 }
+
+document.addEventListener("keydown", (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+  if (document.querySelector(".ov")) return;  // 詳情/表單開著時不攔
+  if (e.key === "ArrowLeft") { anchor = addDays(anchor, view === "week" ? -7 : -30); fetchData(); }
+  else if (e.key === "ArrowRight") { anchor = addDays(anchor, view === "week" ? 7 : 30); fetchData(); }
+  else if (e.key === "t") { anchor = new Date(); fetchData(); }
+});
 
 app.onhostcontextchanged = handleHostContext;
 app.onerror = console.error;

@@ -39,15 +39,17 @@ async def test_stdio():
         async with ClientSession(r, w) as s:
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
-            assert tools == ["agenda", "book", "calendar_data", "list_calendars",
-                             "list_events", "respond_event", "show_calendar",
+            assert tools == ["agenda", "book", "calendar_data", "delete_event",
+                             "find_free_slots", "list_calendars", "list_events",
+                             "respond_event", "search_events", "show_calendar",
                              "update_event"], tools
             ui_tools = {t.name: (t.meta or {}).get("ui", {})
                         for t in (await s.list_tools()).tools if t.meta}
             assert ui_tools["show_calendar"]["resourceUri"] == "ui://m2k-calendar/calendar.html"
             assert ui_tools["calendar_data"]["visibility"] == ["app"]
             # 行事曆查詢/異動工具都掛 UI（客戶端支援 MCP Apps 時渲染行事曆畫面）
-            for n in ("agenda", "list_events", "book", "update_event", "respond_event"):
+            for n in ("agenda", "list_events", "book", "update_event",
+                      "respond_event", "delete_event"):
                 assert ui_tools[n]["resourceUri"] == "ui://m2k-calendar/calendar.html", n
             rr = await s.read_resource("ui://m2k-calendar/calendar.html")
             assert rr.contents[0].mimeType == "text/html;profile=mcp-app"

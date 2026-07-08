@@ -126,35 +126,72 @@ def list_events(start: str, end: str, ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
+def _overlap_note(cal, s, e, exclude_uid=None) -> str:
+    """檢查 [s, e) 是否與現有行程重疊，有則回傳警告文字（查詢失敗回空字串）。"""
+    try:
+        rows = m2kcal.events_json(cal.search(start=s, end=e, event=True, expand=True))
+    except Exception:
+        return ""
+    clash = [r for r in rows if r["uid"] != exclude_uid and not r["allday"]]
+    if not clash:
+        return ""
+    lines = ["  ⚠ 與現有行程重疊："]
+    for r in clash[:5]:
+        lines.append(f"    - {r['start']}–{r['end'][-5:] if r['end'] else '?'} {r['summary']}")
+    return "\n".join(lines)
+
+
 def book(title: str, start: str, end: str = "", location: str = "",
          description: str = "", attendees: list[str] | None = None,
+         repeat: str = "", repeat_until: str = "", reminder_minutes: int = 0,
          ctx: Context = None) -> str:
     """建立會議。
     title 標題；start/end 時間 'YYYY-MM-DD HH:MM'（end 省略則 +1 小時，台北時間）；
-    location 地點；description 描述；attendees 與會者 email 清單。
-    註：CalDAV 無排程，attendees 只記錄不自動寄邀請。
+    location 地點；description 描述；attendees 與會者 email 清單；
+    repeat 重複頻率 daily/weekly/monthly（省略＝不重複）；repeat_until 重複截止 'YYYY-MM-DD'；
+    reminder_minutes 開始前 N 分鐘提醒（0＝不提醒）。
+    註：CalDAV 無排程，attendees 只記錄不自動寄邀請。若時段與現有行程重疊會附警告。
     """
+    freq = {"daily": "DAILY", "weekly": "WEEKLY",
+            "monthly": "MONTHLY"}.get(repeat.strip().lower()) if repeat else None
+    if repeat and not freq:
+        return "錯誤：repeat 需為 daily / weekly / monthly。"
     try:
         s = m2kcal.parse_when(start)
         e = m2kcal.parse_when(end) if end else s + dt.timedelta(hours=1)
+        rrule = ""
+        if freq:
+            rrule = f"FREQ={freq}"
+            if repeat_until:
+                u = m2kcal.parse_when(repeat_until).replace(
+                    hour=23, minute=59, second=59, tzinfo=m2kcal.TW_TZ)
+                rrule += ";UNTIL=" + m2kcal._zulu(u)
         auth = _auth(ctx) or m2kcal.creds()
         url, user, pwd = auth
         cal = _cal(auth)
+        note = _overlap_note(cal, s, e)
         uid = str(uuid.uuid4())
         ics = m2kcal.build_ics(title, s, e, location, description,
-                               attendees=attendees, organizer=user, uid=uid)
+                               attendees=attendees, organizer=user, uid=uid,
+                               rrule=rrule, reminder_minutes=reminder_minutes)
         put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     lines = ["已建立並驗證：",
              f"  標題: {info.get('SUMMARY', title)}",
              f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
+    if rrule:
+        lines.append(f"  重複: {repeat}" + (f"（至 {repeat_until}）" if repeat_until else ""))
+    if reminder_minutes:
+        lines.append(f"  提醒: 開始前 {reminder_minutes} 分鐘")
     if put_status not in (200, 201, 204):
         lines.append(f"  （伺服器 PUT 回 {put_status}，但已驗證事件確實建立）")
     if info.get("location"):
         lines.append(f"  地點: {info['location']}")
     if info.get("attendees"):
         lines.append("  與會者: " + ", ".join(info["attendees"]))
+    if note:
+        lines.append(note)
     return "\n".join(lines)
 
 
@@ -168,6 +205,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
     location 地點；description 描述；add_attendees / remove_attendees
     增減與會者 email 清單（其餘與會者保留）。
     註：CalDAV 無排程，異動不會自動寄通知信給與會者。
+    重複會議（RRULE）的修改會套用到整個系列。改時間時若與現有行程重疊會附警告。
     """
     if not any([title, start, end, location, description,
                 add_attendees, remove_attendees]):
@@ -176,6 +214,17 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
         auth = _auth(ctx) or m2kcal.creds()
         cal = _cal(auth)
         ev = m2kcal.find_event_by_uid(cal, uid)
+        note = ""
+        if start or end:
+            try:
+                olds = m2kcal.parse_ics(ev.data)
+                ns = (m2kcal.parse_when(start) if start
+                      else m2kcal.parse_when(olds.get("start", "")))
+                ne = (m2kcal.parse_when(end) if end
+                      else m2kcal.parse_when(olds.get("end", "")))
+                note = _overlap_note(cal, ns, ne, exclude_uid=uid)
+            except m2kcal.M2KError:
+                note = ""  # 舊值解析不了（如全天事件）就略過重疊檢查
         ics = m2kcal.update_event_ics(
             ev.data, title=title or None,
             start=m2kcal.parse_when(start) if start else None,
@@ -197,6 +246,8 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
         lines.append(f"  地點: {info['location']}")
     if info.get("attendees"):
         lines.append("  與會者: " + ", ".join(info["attendees"]))
+    if note:
+        lines.append(note)
     return "\n".join(lines)
 
 
@@ -262,6 +313,91 @@ def respond_event(uid: str, response: str, ctx: Context = None) -> str:
             "（僅更新你的日曆，不會自動通知召集人）")
 
 
+def delete_event(uid: str, ctx: Context = None) -> str:
+    """刪除會議（依 uid，取自查詢輸出的 id: 欄位）。無法復原；
+    重複會議（RRULE）會刪除整個系列。"""
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+        cal = _cal(auth)
+        ev = m2kcal.find_event_by_uid(cal, uid)
+        title = str(ev.icalendar_component.get("summary", uid))
+        ev.delete()
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    try:
+        m2kcal.find_event_by_uid(cal, uid)
+        return f"錯誤：刪除「{title}」後事件仍存在，請稍後重試或到 webmail 確認。"
+    except m2kcal.M2KError:
+        return f"已刪除會議：「{title}」。"
+
+
+def search_events(keyword: str, start: str = "", end: str = "",
+                  ctx: Context = None) -> str:
+    """依關鍵字搜尋會議（比對標題/地點/描述，伺服器端過濾）。
+    start/end 'YYYY-MM-DD' 可省略，預設搜過去 90 天到未來 180 天。"""
+    try:
+        s = (m2kcal.parse_when(start) if start
+             else dt.datetime.now() - dt.timedelta(days=90))
+        e = (m2kcal.parse_when(end) if end
+             else dt.datetime.now() + dt.timedelta(days=180))
+        cal = _cal(_auth(ctx))
+        seen, hits = set(), []
+        for field in ("summary", "location", "description"):
+            try:
+                found = cal.search(start=s, end=e, event=True, expand=True,
+                                   **{field: keyword})
+            except Exception:
+                continue
+            for ev in found:
+                c = ev.icalendar_component
+                key = (str(c.get("uid", "")), str(c.get("dtstart", "")))
+                if key not in seen:
+                    seen.add(key)
+                    hits.append(ev)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    if not hits:
+        return f"「{keyword}」在 {s:%Y-%m-%d} ~ {e:%Y-%m-%d} 沒有符合的會議。"
+    return (f"「{keyword}」{s:%Y-%m-%d} ~ {e:%Y-%m-%d} 共 {len(hits)} 筆:\n"
+            + m2kcal.render_grouped(hits))
+
+
+def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
+                    day_start: str = "09:00", day_end: str = "18:00",
+                    include_weekends: bool = False, ctx: Context = None) -> str:
+    """找自己行事曆的空檔（free-busy）。回傳工作時段內長度足夠的可預約時間。
+    duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
+    day_start/day_end 每天的可排時段；include_weekends 是否含週末。"""
+    try:
+        s = m2kcal.parse_when(start) if start else dt.datetime.now()
+        e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
+             + dt.timedelta(days=days))
+        cal = _cal(_auth(ctx))
+        fb = cal.freebusy_request(s, e)
+        busy = m2kcal.parse_freebusy(
+            fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
+        slots = m2kcal.free_slots(busy, s, e, duration_minutes,
+                                  day_start, day_end, include_weekends)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    except Exception as err:
+        return f"錯誤：free-busy 查詢失敗：{err}"
+    if not slots:
+        return (f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
+                f"找不到 ≥ {duration_minutes} 分鐘的空檔。")
+    wk = "一二三四五六日"
+    out = [f"{s:%Y-%m-%d} 起 {days} 天，工作時段 {day_start}–{day_end}，"
+           f"≥ {duration_minutes} 分鐘的空檔："]
+    cur = None
+    for a, b in slots:
+        if a.date() != cur:
+            cur = a.date()
+            out.append(f"\n📅 {cur.isoformat()} (週{wk[cur.weekday()]})")
+        mins = int((b - a).total_seconds() // 60)
+        out.append(f"   {a:%H:%M}–{b:%H:%M}（{mins} 分鐘）")
+    return "\n".join(out)
+
+
 def _register_calendar_app(server: "FastMCP") -> None:
     server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
                 structured_output=True)(show_calendar)
@@ -275,10 +411,10 @@ def _register_calendar_app(server: "FastMCP") -> None:
             return f.read()
 
 
-TOOLS = (list_calendars,)
+TOOLS = (list_calendars, search_events, find_free_slots)
 # 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
 # （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）
-APP_TOOLS = (agenda, list_events, book, update_event, respond_event)
+APP_TOOLS = (agenda, list_events, book, update_event, respond_event, delete_event)
 
 
 def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:

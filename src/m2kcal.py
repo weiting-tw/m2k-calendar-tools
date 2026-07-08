@@ -501,9 +501,10 @@ def _local_wall(t):
 
 
 def build_ics(title, start, end, location="", desc="", attendees=None,
-              organizer="", uid=None, stamp=None):
+              organizer="", uid=None, stamp=None, rrule="", reminder_minutes=0):
     """組出 iCalendar 字串，格式對齊 Mail2000（帶 VTIMEZONE + TZID，
-    Mail2000/SabreDAV 後端不吃純 UTC/浮動時間，會回 500）。純函式，方便測試。"""
+    Mail2000/SabreDAV 後端不吃純 UTC/浮動時間，會回 500）。純函式，方便測試。
+    rrule：RRULE 內容（如 'FREQ=WEEKLY;UNTIL=...'）；reminder_minutes：開始前 N 分鐘 VALARM。"""
     uid = uid or str(uuid.uuid4())
     stamp = stamp or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     lines = [
@@ -529,6 +530,8 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
         f"DTEND;TZID={TZID}:{_local_wall(end)}",
         f"SUMMARY:{title}",
     ]
+    if rrule:
+        lines.append(f"RRULE:{rrule}")
     if organizer:
         lines.append(f"ORGANIZER:mailto:{organizer}")
     if location:
@@ -542,8 +545,71 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
             lines.append(
                 f"ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{email}"
             )
+    if reminder_minutes:
+        lines += ["BEGIN:VALARM", f"TRIGGER:-PT{int(reminder_minutes)}M",
+                  "ACTION:DISPLAY", f"DESCRIPTION:{title}", "END:VALARM"]
     lines += ["END:VEVENT", "END:VCALENDAR"]
     return "\r\n".join(lines) + "\r\n"
+
+
+# ---------- free-busy / 空檔計算 ----------
+def parse_freebusy(text):
+    """解析 VFREEBUSY 回應中的 FREEBUSY 行（UTC period），
+    回傳台北時間 naive (start, end) 清單（依開始時間排序）。"""
+    text = text.replace("\r\n ", "").replace("\n ", "")
+    out = []
+    for line in text.splitlines():
+        if not line.startswith("FREEBUSY"):
+            continue
+        for period in line.split(":", 1)[1].split(","):
+            try:
+                a, b = period.strip().split("/")
+                pair = []
+                for v in (a, b):
+                    d = dt.datetime.strptime(v, "%Y%m%dT%H%M%SZ")
+                    pair.append(d.replace(tzinfo=dt.timezone.utc)
+                                 .astimezone(TW_TZ).replace(tzinfo=None))
+                out.append((pair[0], pair[1]))
+            except ValueError:
+                continue  # start/duration 形式或壞行，略過
+    return sorted(out)
+
+
+def free_slots(busy, start, end, duration_min=60,
+               day_start="09:00", day_end="18:00", include_weekends=False):
+    """純函式：在 [start, end) 每天的工作時段扣除 busy 區間，
+    回傳長度 >= duration_min 的空檔 (start, end) 清單。"""
+    def hm(s):
+        h, m = s.split(":")
+        return int(h), int(m)
+    sh, sm = hm(day_start)
+    eh, em = hm(day_end)
+    merged = []
+    for s0, e0 in sorted(busy):
+        if merged and s0 <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e0))
+        else:
+            merged.append((s0, e0))
+    out = []
+    day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day < end:
+        if include_weekends or day.weekday() < 5:
+            ws = day.replace(hour=sh, minute=sm)
+            we = day.replace(hour=eh, minute=em)
+            cur = max(ws, start)
+            for s0, e0 in merged:
+                if e0 <= cur or s0 >= we:
+                    continue
+                if s0 > cur:
+                    out.append((cur, min(s0, we)))
+                cur = max(cur, e0)
+                if cur >= we:
+                    break
+            if cur < min(we, end):
+                out.append((cur, min(we, end)))
+        day += dt.timedelta(days=1)
+    return [(s0, e0) for s0, e0 in out
+            if (e0 - s0).total_seconds() >= duration_min * 60]
 
 
 def _mk_attendee(email):
