@@ -93,4 +93,40 @@ miss_resp = run(provider.login_page(mk_get("txn=nope")))
 check("未知 txn → 400 失效頁", miss_resp.status_code == 400 and "重新連接" in bytes(miss_resp.body).decode())
 check("完成頁不含輸入框", "password" not in body)
 
+# 5) DCR 上限：超過 MAX_CLIENTS 淘汰最舊註冊的 client
+import tempfile
+
+with tempfile.TemporaryDirectory() as td:
+    p2 = mo.M2KOAuthProvider(crypto, clients_path=os.path.join(td, "clients.json"))
+    orig_max = mo.MAX_CLIENTS
+    mo.MAX_CLIENTS = 5
+    try:
+        for i in range(8):
+            run(p2.register_client(OAuthClientInformationFull(
+                client_id=f"c{i}", client_id_issued_at=1000 + i,
+                redirect_uris=[AnyUrl("http://127.0.0.1/cb")])))
+        check("DCR 上限生效", len(p2._clients) == 5)
+        check("DCR 淘汰最舊", "c0" not in p2._clients and "c2" not in p2._clients
+              and "c3" in p2._clients and "c7" in p2._clients)
+    finally:
+        mo.MAX_CLIENTS = orig_max
+
+# 6) 聯絡人快取淘汰：先清過期、超上限淘汰最舊
+import m2k_mcp_server as srv
+
+orig_cap = srv._CACHE_MAX_USERS
+srv._CACHE_MAX_USERS = 3
+try:
+    c = {}
+    srv._cache_put(c, "old", {})
+    c["old"] = (time.time() - srv._CONTACTS_TTL - 1, {})  # 弄成過期
+    srv._cache_put(c, "a", {})
+    check("快取清過期", "old" not in c)
+    srv._cache_put(c, "b", {})
+    srv._cache_put(c, "c", {})
+    srv._cache_put(c, "d", {})  # 超過上限 3 → 淘汰最舊的 a
+    check("快取上限淘汰最舊", len(c) == 3 and "a" not in c and "d" in c)
+finally:
+    srv._CACHE_MAX_USERS = orig_cap
+
 print("\n全部通過 ✅")

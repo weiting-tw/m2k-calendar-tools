@@ -104,8 +104,6 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
    依使用者快取 15 分鐘；Mail2000 IMAP SEARCH 無索引，故不做即時搜尋）。
 3. `M2K_DIRECTORY_FILE`（選配）＝webmail 匯出的全公司通訊錄（CSV/vCard），
    涵蓋沒往來過的人；依 mtime 自動重載。
-4. `M2K_COOKIE`（選配）＝webmail session 即時搜公司通訊錄。SAML session
-   短效、綁個人，只適合單人自用。
 - 異動：`book`（支援 repeat 重複會議與 reminder_minutes 提醒；時段重疊會附警告）、
   `update_event`（改標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位；重複會議改整串）、
   `respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、
@@ -208,6 +206,9 @@ docker run -d -p 8763:8763 -v m2k-data:/data m2k-calendar \
 ```
 
 容器以非 root 執行；stdio 本機模式不需要 Docker。HTTPS 一樣由前面的反向代理處理。
+**NAS（Synology）完整架設步驟**（compose、反向代理、憑證、維運）見
+[docs/deploy-nas.md](docs/deploy-nas.md)。注意：OAuth 授權狀態在記憶體，**只能單行程**，
+不可開多 replica / 負載平衡。
 
 ## 五、Skill（skill/SKILL.md）
 

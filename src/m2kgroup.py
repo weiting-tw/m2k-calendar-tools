@@ -112,30 +112,6 @@ class MemberParser(HTMLParser):
             self._buf.append(data)
 
 
-def pattern_search(query, abid=None):
-    """公司通訊錄模糊搜尋（GET /cgi-bin/adb2search_mds, command=mdssearch）。
-    需 webmail session：M2K_COOKIE 必要、M2K_SSNID 建議一起帶
-    （adb2search=個人通訊錄、adb2search_mds=公司通訊錄，已實測）。
-    session 過期回應含 M2KExpire → 丟 RuntimeError。回 [(姓名, email)]。"""
-    s = session()
-    params = {
-        "command": "mdssearch", "querystring": query,
-        "workingabid": abid or os.environ.get("M2K_ABID", "BOOK1@example.com"),
-        "workingdirid": "", "queryfield": "",
-        "tofield": "widget", "showeditui": "0",
-        "m": os.environ.get("M2K_M", ""),
-        "ssnid": os.environ.get("M2K_SSNID", ""),
-    }
-    r = s.get(f"{BASE}/cgi-bin/adb2search_mds", params=params, timeout=20)
-    r.raise_for_status()
-    if "M2KExpire" in r.text:
-        raise RuntimeError("webmail session 已過期，請從已登入的瀏覽器"
-                           "重新取得 M2K_COOKIE（與 M2K_SSNID）")
-    p = MemberParser()
-    p.feed(r.text)
-    return p.rows
-
-
 def expand(abid, dirid, max_pages=40):
     s = session()
     seen = {}

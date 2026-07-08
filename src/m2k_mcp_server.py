@@ -335,6 +335,17 @@ def respond_event(uid: str, response: str, ctx: Context = None) -> str:
 # 聯絡人快取：掃一年行事曆要幾秒，依使用者 email 快取 15 分鐘
 _CONTACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _CONTACTS_TTL = 900
+_CACHE_MAX_USERS = 300       # 快取淘汰：先清過期，仍超過就淘汰最舊（防長期記憶體累積）
+
+
+def _cache_put(cache: dict, key, value) -> None:
+    now = time.time()
+    for k in [k for k, (ts, _) in cache.items() if now - ts >= _CONTACTS_TTL]:
+        del cache[k]
+    if len(cache) >= _CACHE_MAX_USERS:
+        for k in sorted(cache, key=lambda k: cache[k][0])[:len(cache) - _CACHE_MAX_USERS + 1]:
+            del cache[k]
+    cache[key] = (now, value)
 
 # 信件往來聯絡人池：一次抓最近信件的 header 建池、依使用者快取
 #（Mail2000 IMAP SEARCH 無索引，不能按查詢即時搜，見 imap_recent_contacts）
@@ -351,7 +362,7 @@ def _mail_contacts(auth) -> dict:
         found = m2kcal.imap_recent_contacts(auth[1], auth[2])
     except Exception:
         found = {}
-    _MAIL_CACHE[auth[1]] = (time.time(), found)
+    _cache_put(_MAIL_CACHE, auth[1], found)
     return found
 
 # （選配）靜態公司通訊錄檔：M2K_DIRECTORY_FILE 指向 webmail 匯出的
@@ -375,28 +386,11 @@ def _directory_contacts() -> dict:
     return contacts
 
 
-def _adb2_lookup(names: list[str]) -> tuple[dict, str]:
-    """公司通訊錄搜尋（選配）：需在 .env 設 webmail session（M2K_COOKIE 必要，
-    建議加 M2K_SSNID；SAML session 短效，過期須手動更新）。
-    回 ({name: [(姓名, email)]}, 註記)。未設定回 ({}, "")。
-    註：cookie 屬於部署者；公司通訊錄為全員一致的資料，多人共用模式下風險有限。"""
-    if not os.environ.get("M2K_COOKIE"):
-        return {}, ""
-    import m2kgroup
-    out = {}
-    for n in names:
-        try:
-            out[n] = m2kgroup.pattern_search(n)
-        except Exception as e:
-            return {}, f"（公司通訊錄查詢失敗：{e}）"
-    return out, ""
-
-
 def find_person(names: list[str], ctx: Context = None) -> str:
-    """依（模糊的）名字或暱稱查同事的 email。資料來源（自動合併）：
-    1) 行事曆近一年的與會者/召集人 2) 你信箱的信件往來（IMAP，
-    用你自己的憑證搜自己的信）3) 公司通訊錄匯出檔（M2K_DIRECTORY_FILE，選配）
-    4) 公司通訊錄即時搜尋（M2K_COOKIE，選配）。
+    """依（模糊的）名字或暱稱查同事的 email。資料來源（自動合併，
+    前兩項用使用者自己的憑證、每人隔離）：
+    1) 行事曆近一年的與會者/召集人 2) 你信箱的信件往來（IMAP）
+    3) 公司通訊錄匯出檔（M2K_DIRECTORY_FILE，選配）。
     使用者提到模糊人名（如「把 pekka 加進會議」）時先用這個查；
     若有多個候選或查無此人，把結果列給使用者確認，**絕不自行猜測 email**。
     names 可一次查多個名字。"""
@@ -408,19 +402,14 @@ def find_person(names: list[str], ctx: Context = None) -> str:
             contacts = hit[1]
         else:
             contacts = m2kcal.collect_contacts(_cal(auth))
-            _CONTACTS_CACHE[key] = (time.time(), contacts)
+            _cache_put(_CONTACTS_CACHE, key, contacts)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     dircon = _directory_contacts()
-    adb, adb_note = _adb2_lookup(names)
     lines = []
-    if adb_note:
-        lines.append(adb_note)
     src = [f"行事曆歷史 {len(contacts)} 位", "信件往來"]
     if dircon:
         src.append(f"公司通訊錄檔 {len(dircon)} 位")
-    if adb:
-        src.append("公司通訊錄即時搜尋")
     lines.append("（資料來源：" + " + ".join(src) + "）")
     mailcon = _mail_contacts(auth)
     for n in names:
@@ -433,12 +422,6 @@ def find_person(names: list[str], ctx: Context = None) -> str:
             if crec:
                 extra = f"，行事曆出現 {crec['count']} 次"
             rows.append(f"  - {rec['name'] or email.split('@')[0]} <{email}>（公司通訊錄檔{extra}）")
-        for nm, email in adb.get(n, [])[:8]:
-            e = email.lower()
-            if e in seen:
-                continue
-            seen.add(e)
-            rows.append(f"  - {nm or e.split('@')[0]} <{email}>（公司通訊錄）")
         for _s, email, rec in m2kcal.match_contacts(contacts, n)[:5]:
             if email in seen:
                 continue
