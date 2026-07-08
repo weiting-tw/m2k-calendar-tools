@@ -29,6 +29,7 @@ let view: "day" | "week" | "month" = "week";
 let anchor = new Date();    // 目前檢視的錨點日期
 let data: CalData | null = null;
 let loading = false;
+let loadError = "";
 let canFullscreen = false;
 let displayMode = "inline";
 
@@ -71,19 +72,28 @@ function step(dir: 1 | -1) {
 // ---------- 資料 ----------
 let fetchSeq = 0;  // 序號：丟棄慢到的舊回應，避免快速切換時舊資料蓋掉新畫面
 
-async function fetchData(force = false): Promise<void> {
+// 快取是否涵蓋目前檢視範圍（涵蓋＝可直接渲染、不用等網路）
+function covered(): boolean {
+  if (!data) return false;
   const { start, end } = rangeFor(view, anchor);
+  return dstr(start) >= data.range.start && dstr(end) <= data.range.end;
+}
+
+async function fetchData(force = false): Promise<void> {
   // 目前快取已涵蓋要顯示的範圍就直接渲染（日/週翻頁大多免重抓）
-  if (!force && data
-      && dstr(start) >= data.range.start && dstr(end) <= data.range.end) {
+  if (!force && covered()) {
     render();
+    maybePrefetch();  // 靠近快取邊界就先在背景補抓，翻頁不會撞到載入牆
     return;
   }
-  // 抓比顯示範圍大的窗口（前後各 7 天），降低工具呼叫次數
-  const fs = view === "month" ? start : addDays(start, -7);
-  const fe = view === "month" ? end : addDays(end, 7);
+  const { start, end } = rangeFor(view, anchor);
+  // 預抓比顯示範圍大的窗口，切換大多命中快取、降低工具呼叫次數：
+  // 日/週 → 前後各兩週；月 → 前後各一個月
+  const pad = view === "month" ? 28 : 14;
+  const fs = addDays(start, -pad);
+  const fe = addDays(end, pad);
   const seq = ++fetchSeq;
-  loading = true; render();
+  loading = true; loadError = ""; render();
   try {
     const res = await app.callServerTool({
       name: "calendar_data",
@@ -91,14 +101,42 @@ async function fetchData(force = false): Promise<void> {
     });
     if (seq !== fetchSeq) return;  // 已有更新的請求在跑，這筆作廢
     const sc = extractCalData(res);
-    if (sc?.error) toast("讀取失敗：" + sc.error, true);
+    if (sc?.error) loadError = sc.error;
     else if (sc?.events) data = sc;
-    else toast("讀取失敗：" + firstText(res), true);
+    else loadError = firstText(res) || "伺服器沒有回傳資料";
   } catch (e) {
-    if (seq === fetchSeq) toast("讀取失敗：" + String(e), true);
+    if (seq === fetchSeq) loadError = String(e);
   } finally {
     if (seq === fetchSeq) { loading = false; render(); }
   }
+}
+
+// 靠近快取邊界（日/週差 3 天內、月差 7 天內）時，背景補抓新窗口
+let prefetching = false;
+
+async function maybePrefetch(): Promise<void> {
+  if (prefetching || !data) return;
+  const { start, end } = rangeFor(view, anchor);
+  const margin = view === "month" ? 7 : 3;
+  const near = dstr(addDays(start, -margin)) < data.range.start
+            || dstr(addDays(end, margin)) > data.range.end;
+  if (!near) return;
+  prefetching = true;
+  const pad = view === "month" ? 28 : 14;
+  const seq = ++fetchSeq;
+  try {
+    const res = await app.callServerTool({
+      name: "calendar_data",
+      arguments: { start: dstr(addDays(start, -pad)), end: dstr(addDays(end, pad)) },
+    });
+    if (seq !== fetchSeq) return;  // 期間使用者又觸發了正式抓取
+    const sc = extractCalData(res);
+    if (sc?.events) {
+      data = sc;
+      if (!document.querySelector(".ov")) render();  // 詳情/表單開著就不重畫
+    }
+  } catch { /* 背景補抓失敗就算了，翻到邊界外會走正常載入流程 */ }
+  finally { prefetching = false; }
 }
 
 // 有些 host 不回傳 structuredContent，退回解析 content 內的 JSON 文字
@@ -132,12 +170,24 @@ function render() {
   const wrap = el("div", "cal" + (displayMode === "fullscreen" ? " fs" : ""));
   wrap.appendChild(renderHeader());
   const body = el("div", "cal-body");
-  if (loading && !data) body.appendChild(el("div", "cal-loading", "載入中…"));
-  else if (view === "month") body.appendChild(renderMonth());
-  else body.appendChild(renderTimeGrid());
+  // 三態：快取涵蓋 → 直接顯示；抓取中 → 載入畫面；失敗 → 錯誤 + 重試
+  if (covered()) {
+    body.appendChild(view === "month" ? renderMonth() : renderTimeGrid());
+  } else if (loading) {
+    body.appendChild(el("div", "cal-loading", "載入中…"));
+  } else if (loadError) {
+    const box = el("div", "cal-loading");
+    box.append(el("div", "cal-err", "讀取失敗：" + loadError.slice(0, 160)));
+    const retry = el("button", "btn", "重試") as HTMLButtonElement;
+    retry.onclick = () => fetchData(true);
+    box.appendChild(retry);
+    body.appendChild(box);
+  } else {
+    body.appendChild(el("div", "cal-loading", "載入中…"));
+  }
   wrap.appendChild(body);
   root.appendChild(wrap);
-  if (view !== "month") {
+  if (view !== "month" && covered()) {
     const grid = root.querySelector(".wk-scroll");
     if (grid) grid.scrollTop = HOUR_H * DAY_START_SCROLL - 8;
   }
@@ -163,12 +213,13 @@ function renderHeader(): HTMLElement {
     btn("›", () => step(1)),
   );
   const { start, end } = rangeFor(view, anchor);
+  const suffix = loading ? " ⟳" : "";  // 背景更新中的小提示
   const title = el("div", "cal-title",
-    view === "day"
+    (view === "day"
       ? `${anchor.getFullYear()}年${anchor.getMonth() + 1}月${anchor.getDate()}日（週${WK[anchor.getDay()]}）`
       : view === "week"
         ? `${start.getFullYear()}年${start.getMonth() + 1}月 ${start.getDate()}日 – ${addDays(end, -1).getMonth() + 1}月${addDays(end, -1).getDate()}日`
-        : `${anchor.getFullYear()}年${anchor.getMonth() + 1}月`);
+        : `${anchor.getFullYear()}年${anchor.getMonth() + 1}月`) + suffix);
   const right = el("div", "cal-nav");
   const dy = btn("日", () => { view = "day"; fetchData(); }, view === "day" ? "btn on" : "btn");
   const wk = btn("週", () => { view = "week"; fetchData(); }, view === "week" ? "btn on" : "btn");

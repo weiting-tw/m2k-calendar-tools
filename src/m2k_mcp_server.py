@@ -252,9 +252,23 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
 
 
 # ---------- MCP App：互動行事曆 UI ----------
-CAL_UI_URI = "ui://m2k-calendar/calendar.html"
 _CAL_UI_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "apps", "calendar", "dist", "calendar.html")
+
+
+def _cal_ui_uri() -> str:
+    """resource URI 帶內容 hash：部分 host 會以 URI 為 key 快取 UI，
+    不帶版本的話改版後使用者仍拿到舊 UI。"""
+    try:
+        import hashlib
+        with open(_CAL_UI_HTML, "rb") as f:
+            h = hashlib.sha1(f.read()).hexdigest()[:8]
+        return f"ui://m2k-calendar/calendar-{h}.html"
+    except OSError:
+        return "ui://m2k-calendar/calendar.html"
+
+
+CAL_UI_URI = _cal_ui_uri()
 
 
 def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx) -> dict[str, Any]:
