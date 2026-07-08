@@ -118,6 +118,40 @@ Docker Hub、有新版就自動拉取並重建容器（資料在 volume，不受
 - 伺服器**不儲存任何帳密**：憑證加密封在 token 內、每請求解密 pass-through。
 - 內建防護：`/login` 同一授權交易錯 5 次作廢、動態註冊 client 有上限（超過淘汰最舊）、
   聯絡人快取有 TTL 與數量上限。
-- **建議**在反向代理層加 per-IP rate limit（Synology 內建反向代理沒有此功能；
-  在意的話可在容器前再放一個 nginx，`limit_req` 幾行即可），
-  搭配 Mail2000 本身的登入失敗鎖定作為第二道防線。
+- **內建失敗節流（重要）**：Mail2000 會把「短時間多次錯誤密碼」的來源 IP
+  在防火牆層整個封鎖——對上游而言 NAS 是單一 IP，被封＝**全部使用者一起斷線**。
+  bridge 因此內建兩層防護：同一來源 IP 15 分鐘失敗 8 次、或全 server 15 分鐘
+  失敗 20 次，就直接回 429 不再透傳給上游（成功登入不受限）。
+
+### 搭配 fail2ban 在防火牆層封鎖攻擊來源（選配）
+
+驗證失敗會以固定格式寫入 `/data/auth.log`（`M2K_AUTH_LOG` 可改），
+內含真實來源 IP（取自 X-Forwarded-For）：
+
+```
+2026-07-09 12:00:00 m2k-login-fail ip=1.2.3.4
+```
+
+若 NAS 已跑 fail2ban（如 crazymax/fail2ban）：
+
+1. m2k 的 compose 把 volume 改成 bind mount 讓 fail2ban 讀得到：
+   `- ./m2k-data:/data`，並在 fail2ban 容器加 `- ./m2k-data:/var/log/m2k:ro`
+2. `filter.d/m2k-login.conf`：
+   ```ini
+   [Definition]
+   failregex = m2k-login-fail ip=<HOST>$
+   datepattern = ^%%Y-%%m-%%d %%H:%%M:%%S
+   ```
+3. `jail.d/m2k-login.conf`：
+   ```ini
+   [m2k-login]
+   enabled = true
+   filter = m2k-login
+   logpath = /var/log/m2k/auth.log
+   port = http,https
+   maxretry = 5
+   findtime = 15m
+   bantime = 1h
+   ```
+
+（入口是主機上的反向代理，fail2ban 用 INPUT chain ban 來源 IP 即可生效。）

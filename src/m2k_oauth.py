@@ -49,6 +49,12 @@ DONE_TTL = 600               # 記住「已完成授權」的 txn，讓舊分頁
 MAX_LOGIN_TRIES = 5          # 同一授權交易的密碼錯誤上限（防透過 /login 暴力猜測）
 MAX_CLIENTS = 200            # DCR 開放註冊的上限：超過就淘汰最舊的 client
                              # （防匿名灌爆 clients 檔；被淘汰的 client 重新註冊即可）
+# 失敗節流：Mail2000 會把「短時間多次錯誤密碼」的來源 IP 整個防火牆封鎖
+# （已實際發生）。bridge 對上游而言是單一 IP，被封＝全部使用者斷線，
+# 所以寧可先在這裡拒絕，也不能把失敗流量透傳給上游。
+FAIL_WINDOW = 900            # 失敗計數的滑動視窗（秒）
+FAIL_LIMIT_IP = 8            # 同一來源 IP 視窗內的失敗上限
+FAIL_LIMIT_GLOBAL = 20       # 全 server 視窗內的失敗上限（斷路器）
 DEFAULT_DOMAIN = os.environ.get("M2K_DOMAIN", "gss.com.tw")  # 帳號沒打 @ 時自動補
 
 _SEC_HEADERS = {             # /login 頁安全標頭：防點擊劫持、不快取憑證頁
@@ -150,6 +156,7 @@ class M2KOAuthProvider:
         self._pending: dict[str, dict] = {}
         self._codes: dict[str, CredAuthorizationCode] = {}
         self._done: dict[str, float] = {}  # 已成功完成的 txn → 到期時間
+        self._fails: dict[str, list[float]] = {}  # 來源 IP（"*"=全域）→ 失敗時間戳
 
     # --- client 註冊（DCR） ---
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
@@ -182,6 +189,37 @@ class M2KOAuthProvider:
         self._pending = {k: v for k, v in self._pending.items() if v["exp"] > now}
         self._codes = {k: v for k, v in self._codes.items() if v.expires_at > now}
         self._done = {k: v for k, v in self._done.items() if v > now}
+        self._fails = {k: ts for k, ts in
+                       ((k, [t for t in v if now - t < FAIL_WINDOW])
+                        for k, v in self._fails.items()) if ts}
+
+    @staticmethod
+    def _client_ip(request: Request) -> str:
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
+        return request.client.host if request.client else "?"
+
+    def _throttled(self, ip: str) -> bool:
+        now = time.time()
+        for k in (ip, "*"):
+            self._fails[k] = [t for t in self._fails.get(k, []) if now - t < FAIL_WINDOW]
+        return (len(self._fails.get(ip, [])) >= FAIL_LIMIT_IP
+                or len(self._fails.get("*", [])) >= FAIL_LIMIT_GLOBAL)
+
+    def _record_fail(self, ip: str) -> None:
+        now = time.time()
+        self._fails.setdefault(ip, []).append(now)
+        self._fails.setdefault("*", []).append(now)
+        # 固定格式寫入失敗日誌，供主機層 fail2ban 監看並在防火牆 ban 掉來源
+        path = os.environ.get("M2K_AUTH_LOG")
+        if path:
+            try:
+                with open(path, "a") as f:
+                    f.write(time.strftime("%Y-%m-%d %H:%M:%S")
+                            + f" m2k-login-fail ip={ip}\n")
+            except OSError:
+                pass
 
     def _login_html(self, txn: str, error: str = "") -> str:
         err = f'<p class="err">{error}</p>' if error else ""
@@ -251,11 +289,19 @@ p{font-size:13px;color:#475569}</style></head><body>
                 "", "此授權階段已失效或已過期。若尚未連上，請回到用戶端重新連接一次。"), 400)
         client_id, params = entry["cid"], entry["params"]
 
+        # 失敗節流：上游會封鎖「多次錯誤密碼」的來源 IP（即本 server 的 IP），
+        # 達門檻就先在這裡擋下，不透傳給上游
+        ip = self._client_ip(request)
+        if self._throttled(ip):
+            return self._page(self._login_html(
+                "", "驗證嘗試過於頻繁，請稍後再試。"), 429)
+
         # 打一次 CalDAV 驗證憑證（blocking → 丟 worker thread）
         auth = (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), user, pwd)
         try:
             await anyio.to_thread.run_sync(lambda: m2kcal.connect(auth))
         except m2kcal.M2KError:
+            self._record_fail(ip)
             entry["tries"] += 1
             if entry["tries"] >= MAX_LOGIN_TRIES:
                 del self._pending[txn]

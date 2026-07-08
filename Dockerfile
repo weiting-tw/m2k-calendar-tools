@@ -24,7 +24,8 @@ COPY apps/calendar/dist/ apps/calendar/dist/
 RUN useradd -r -u 10001 m2k && mkdir /data && chown m2k /data
 USER m2k
 ENV M2K_BRIDGE_KEY_FILE=/data/bridge-key \
-    M2K_OAUTH_CLIENTS=/data/oauth-clients.json
+    M2K_OAUTH_CLIENTS=/data/oauth-clients.json \
+    M2K_AUTH_LOG=/data/auth.log
 
 EXPOSE 8763
 ENTRYPOINT ["python", "src/m2k_mcp_server.py"]
