@@ -676,6 +676,34 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
     return server
 
 
+class _NoBufferMiddleware:
+    """回應加 X-Accel-Buffering: no——nginx 系反向代理（Synology、NPM…）
+    看到會對該回應停用緩衝，SSE 事件才會即時送達；代理端不用改設定。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send2(msg):
+            if msg["type"] == "http.response.start":
+                msg.setdefault("headers", []).append((b"x-accel-buffering", b"no"))
+            await send(msg)
+
+        return await self.app(scope, receive, send2)
+
+
+def _run_http(server: "FastMCP") -> None:
+    import uvicorn
+    # timeout_graceful_shutdown：SSE 長連線不會自己斷，收到 SIGTERM 後
+    # 最多等 3 秒就強制關閉，容器 stop/重啟才不會卡住
+    uvicorn.run(_NoBufferMiddleware(server.streamable_http_app()),
+                host=server.settings.host, port=server.settings.port,
+                timeout_graceful_shutdown=3)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="m2k 行事曆 MCP server")
     ap.add_argument("--http", action="store_true",
@@ -690,9 +718,8 @@ if __name__ == "__main__":
     if args.oauth:
         if not args.issuer:
             ap.error("--oauth 需要 --issuer（用戶端可達的對外網址）")
-        build_server(args.host, args.port, oauth=True,
-                     issuer=args.issuer).run(transport="streamable-http")
+        _run_http(build_server(args.host, args.port, oauth=True, issuer=args.issuer))
     elif args.http:
-        build_server(args.host, args.port).run(transport="streamable-http")
+        _run_http(build_server(args.host, args.port))
     else:
         build_server().run()
