@@ -47,6 +47,8 @@ TXN_TTL = 600                # /authorize → /login 完成的時限
 CODE_TTL = 300               # 授權碼時限
 DONE_TTL = 600               # 記住「已完成授權」的 txn，讓舊分頁看到正確的成功訊息
 MAX_LOGIN_TRIES = 5          # 同一授權交易的密碼錯誤上限（防透過 /login 暴力猜測）
+MAX_CLIENTS = 200            # DCR 開放註冊的上限：超過就淘汰最舊的 client
+                             # （防匿名灌爆 clients 檔；被淘汰的 client 重新註冊即可）
 DEFAULT_DOMAIN = os.environ.get("M2K_DOMAIN", "gss.com.tw")  # 帳號沒打 @ 時自動補
 
 _SEC_HEADERS = {             # /login 頁安全標頭：防點擊劫持、不快取憑證頁
@@ -156,6 +158,11 @@ class M2KOAuthProvider:
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         self._clients[client_info.client_id] = client_info.model_dump(mode="json")
+        if len(self._clients) > MAX_CLIENTS:
+            for cid in sorted(self._clients,
+                              key=lambda c: self._clients[c].get("client_id_issued_at") or 0
+                              )[:len(self._clients) - MAX_CLIENTS]:
+                del self._clients[cid]
         tmp = self.clients_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(self._clients, f, ensure_ascii=False, indent=1)

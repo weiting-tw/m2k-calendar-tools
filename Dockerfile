@@ -14,6 +14,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
+# MCP App 行事曆 UI（show_calendar 的 ui:// resource 讀這個建置產物）
+COPY apps/calendar/dist/ apps/calendar/dist/
 
 # 非 root 執行；OAuth 執行期檔案（金鑰、client 註冊）collect 在 /data
 RUN useradd -r -u 10001 m2k && mkdir /data && chown m2k /data
