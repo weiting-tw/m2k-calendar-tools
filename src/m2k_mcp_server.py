@@ -336,6 +336,24 @@ def respond_event(uid: str, response: str, ctx: Context = None) -> str:
 _CONTACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _CONTACTS_TTL = 900
 
+# 信件往來聯絡人池：一次抓最近信件的 header 建池、依使用者快取
+#（Mail2000 IMAP SEARCH 無索引，不能按查詢即時搜，見 imap_recent_contacts）
+_MAIL_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _mail_contacts(auth) -> dict:
+    """用使用者自己的憑證抓自己信箱的最近聯絡人池。
+    共用部署天生每人隔離、零設定；失敗（IMAP 關閉等）回空 dict。"""
+    hit = _MAIL_CACHE.get(auth[1])
+    if hit and time.time() - hit[0] < _CONTACTS_TTL:
+        return hit[1]
+    try:
+        found = m2kcal.imap_recent_contacts(auth[1], auth[2])
+    except Exception:
+        found = {}
+    _MAIL_CACHE[auth[1]] = (time.time(), found)
+    return found
+
 # （選配）靜態公司通訊錄檔：M2K_DIRECTORY_FILE 指向 webmail 匯出的
 # CSV/vCard。共用部署免 cookie 即可全公司搜尋；人員異動時重新匯出覆蓋即可。
 _DIRFILE_CACHE: tuple[str, float, dict] | None = None
@@ -375,10 +393,10 @@ def _adb2_lookup(names: list[str]) -> tuple[dict, str]:
 
 
 def find_person(names: list[str], ctx: Context = None) -> str:
-    """依（模糊的）名字或暱稱查同事的 email。資料來源（依可用性）：
-    1) 公司通訊錄匯出檔（M2K_DIRECTORY_FILE，共用部署建議）
-    2) 公司通訊錄即時搜尋（M2K_COOKIE webmail session，選配）
-    3) 你行事曆近一年出現過的與會者與召集人（永遠可用）。
+    """依（模糊的）名字或暱稱查同事的 email。資料來源（自動合併）：
+    1) 行事曆近一年的與會者/召集人 2) 你信箱的信件往來（IMAP，
+    用你自己的憑證搜自己的信）3) 公司通訊錄匯出檔（M2K_DIRECTORY_FILE，選配）
+    4) 公司通訊錄即時搜尋（M2K_COOKIE，選配）。
     使用者提到模糊人名（如「把 pekka 加進會議」）時先用這個查；
     若有多個候選或查無此人，把結果列給使用者確認，**絕不自行猜測 email**。
     names 可一次查多個名字。"""
@@ -398,13 +416,13 @@ def find_person(names: list[str], ctx: Context = None) -> str:
     lines = []
     if adb_note:
         lines.append(adb_note)
-    src = []
+    src = [f"行事曆歷史 {len(contacts)} 位", "信件往來"]
     if dircon:
         src.append(f"公司通訊錄檔 {len(dircon)} 位")
     if adb:
         src.append("公司通訊錄即時搜尋")
-    src.append(f"行事曆歷史 {len(contacts)} 位")
     lines.append("（資料來源：" + " + ".join(src) + "）")
+    mailcon = _mail_contacts(auth)
     for n in names:
         seen = set()
         rows = []
@@ -426,7 +444,17 @@ def find_person(names: list[str], ctx: Context = None) -> str:
                 continue
             seen.add(email)
             nm = rec["name"] or email.split("@")[0]
-            rows.append(f"  - {nm} <{email}>（行事曆出現 {rec['count']} 次，最近 {rec['last'] or '?'}）")
+            mails = mailcon.get(email, {}).get("count")
+            extra = f"，信件 {mails} 封" if mails else ""
+            rows.append(f"  - {nm} <{email}>"
+                        f"（行事曆出現 {rec['count']} 次，最近 {rec['last'] or '?'}{extra}）")
+        for _s, email, rec in m2kcal.match_contacts(mailcon, n)[:5]:
+            if email in seen:
+                continue
+            seen.add(email)
+            nm = rec["name"] or email.split("@")[0]
+            rows.append(f"  - {nm} <{email}>"
+                        f"（信件往來 {rec['count']} 封，最近 {rec['last'] or '?'}）")
         if not rows:
             lines.append(f"「{n}」：找不到，請向使用者確認 email。")
             continue
