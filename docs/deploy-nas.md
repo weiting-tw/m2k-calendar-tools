@@ -51,6 +51,19 @@ docker compose logs -f   # 應看到 Uvicorn running on http://0.0.0.0:8763
 （Synology 也可以在 Container Manager 的「專案」直接貼上這份 compose。
 想自己建 image 的話：clone 本 repo 後把 `image:` 換成 `build: .`。）
 
+**自動拉最新版**：在同一份 compose 加一個 Watchtower 服務，每小時檢查
+Docker Hub、有新版就自動拉取並重建容器（資料在 volume，不受影響）：
+
+```yaml
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 3600 --cleanup m2k-calendar   # 只盯 m2k-calendar，順手清舊 image
+    restart: unless-stopped
+```
+
 **重要：只能單一容器/單行程。** OAuth 的進行中授權交易存在記憶體，
 開多個 replica 或負載平衡會讓授權流程隨機失敗。
 
@@ -92,7 +105,8 @@ docker compose logs -f   # 應看到 Uvicorn running on http://0.0.0.0:8763
 
 | 事項 | 做法 |
 |---|---|
-| 更新版本 | `docker compose pull && docker compose up -d` |
+| 更新版本（手動） | `docker compose pull && docker compose up -d`；或 Container Manager → 映像檔 → 更新後，到專案「建置」重建 |
+| 更新版本（自動） | compose 加 Watchtower（見下），或 DSM 任務排程表定時跑上面那行 |
 | 備份 | 備 `m2k-data` volume（含 `bridge-key`：遺失＝全員 token 失效、需重新授權） |
 | 全面撤銷 | 刪掉 volume 裡的 `bridge-key` 後重啟（換金鑰＝所有已發 token 立即失效） |
 | 個人撤銷 | 使用者到 webmail 撤銷該應用程式專用密碼即可 |
