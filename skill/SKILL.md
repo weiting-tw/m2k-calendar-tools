@@ -17,7 +17,7 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 查自己行程 / 建會議 / 改會議 / 刪會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `delete_event` / `list_calendars` |
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
 | 找自己的空檔（「明天哪裡有空 1 小時」） | MCP 工具：`find_free_slots` |
-| 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（資料源＝行事曆歷史與會者） |
+| 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史與會者；設定 M2K_COOKIE/M2K_SSNID 後可搜全公司通訊錄） |
 | 建重複會議 / 加提醒 | `book` 的 `repeat`（daily/weekly/monthly）+ `repeat_until`、`reminder_minutes` |
 | 互動行事曆畫面（週/月檢視、UI 上直接增改刪、拖曳改時間） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI；agenda/list_events/book/update_event/respond_event/delete_event 也會帶出同一個畫面） |
 | 回覆會議邀請（接受/暫定/拒絕，只改自己日曆） | MCP 工具：`respond_event` |

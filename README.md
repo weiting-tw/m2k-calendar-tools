@@ -95,7 +95,9 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 `src/m2k_mcp_server.py` 提供工具：
 - 查詢：`agenda`、`list_events`、`search_events`（關鍵字搜標題/地點/描述）、
   `find_free_slots`（free-busy 找自己的空檔）、`find_person`（模糊人名查 email，
-  資料源＝行事曆近一年的與會者/召集人）、`list_calendars`
+  資料源＝行事曆近一年的與會者/召集人；若在 .env 設定 webmail session 的
+  `M2K_COOKIE` 與 `M2K_SSNID`（DevTools 取得），會優先搜**公司通訊錄**
+  （adb2search_mds）——SAML session 短效，過期需重新取得，工具會提示）、`list_calendars`
 - 異動：`book`（支援 repeat 重複會議與 reminder_minutes 提醒；時段重疊會附警告）、
   `update_event`（改標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位；重複會議改整串）、
   `respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、
