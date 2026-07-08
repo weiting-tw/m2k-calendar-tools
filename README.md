@@ -94,10 +94,16 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 `src/m2k_mcp_server.py` 提供工具：
 - 查詢：`agenda`、`list_events`、`search_events`（關鍵字搜標題/地點/描述）、
-  `find_free_slots`（free-busy 找自己的空檔）、`find_person`（模糊人名查 email，
-  資料源＝行事曆近一年的與會者/召集人；若在 .env 設定 webmail session 的
-  `M2K_COOKIE` 與 `M2K_SSNID`（DevTools 取得），會優先搜**公司通訊錄**
-  （adb2search_mds）——SAML session 短效，過期需重新取得，工具會提示）、`list_calendars`
+  `find_free_slots`（free-busy 找自己的空檔）、`find_person`（模糊人名查 email）、
+  `list_calendars`
+
+**find_person 的資料來源**（依可用性合併，多人共用部署建議用通訊錄檔）：
+1. `M2K_DIRECTORY_FILE`＝webmail 匯出的**全公司通訊錄**（CSV 或 vCard）。
+   無 session 問題、全公司可查；人員異動時重新匯出覆蓋即可（依 mtime 自動重載）。
+2. `M2K_COOKIE`（＋`M2K_SSNID`）＝webmail session **即時搜**公司通訊錄
+   （adb2search_mds）。SAML session 短效、綁個人，只適合單人自用。
+3. 使用者自己行事曆近一年的與會者/召集人——零設定、跟著各使用者的憑證走，
+   共用部署天生每人隔離。
 - 異動：`book`（支援 repeat 重複會議與 reminder_minutes 提醒；時段重疊會附警告）、
   `update_event`（改標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位；重複會議改整串）、
   `respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、

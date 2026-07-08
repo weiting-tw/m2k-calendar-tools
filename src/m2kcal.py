@@ -587,6 +587,42 @@ def collect_contacts(cal, start=None, end=None):
     return out
 
 
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def load_directory_file(path):
+    """讀通訊錄匯出檔（webmail 匯出的 vCard 或 CSV/TSV），
+    回 {email: {"name","count","last"}}（與 collect_contacts 同構，可餵 match_contacts）。
+    CSV 不假設欄位順序：逐列抓第一個 email，姓名取最長的非 email 欄位。"""
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        text = f.read()
+    out = {}
+    if path.lower().endswith((".vcf", ".vcard")) or "BEGIN:VCARD" in text[:300]:
+        unfolded = text.replace("\r\n ", "").replace("\n ", "")
+        for card in unfolded.split("END:VCARD"):
+            em = re.search(r"^EMAIL[^:]*:(\S+)", card, re.M | re.I)
+            if not em:
+                continue
+            fn = re.search(r"^FN[^:]*:(.+)", card, re.M | re.I)
+            out[em.group(1).strip().lower()] = {
+                "name": fn.group(1).strip() if fn else "", "count": 0, "last": ""}
+    else:
+        import csv
+        lines = text.splitlines()
+        delim = "\t" if lines and "\t" in lines[0] else ","
+        for row in csv.reader(lines, delimiter=delim):
+            em = next((_EMAIL_RE.search(c).group(0) for c in row if _EMAIL_RE.search(c)), None)
+            if not em:
+                continue  # 表頭或空列
+            name = ""
+            for c in row:
+                c = c.strip()
+                if c and "@" not in c and len(c) > len(name):
+                    name = c
+            out[em.lower()] = {"name": name, "count": 0, "last": ""}
+    return out
+
+
 def match_contacts(contacts, query):
     """模糊比對名字：完整 local-part > 前綴（含底線分段）> 包含 > 顯示名包含。
     回傳 [(score, email, rec)]，分數與出現次數高者在前。"""
