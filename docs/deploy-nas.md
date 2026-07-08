@@ -21,18 +21,15 @@ m2k-calendar 容器（--oauth）──► mail.gss.com.tw（CalDAV / IMAP）
 
 ## 一、部署容器
 
-SSH 進 NAS，取得程式碼並建立 `docker-compose.yml`：
-
-```bash
-git clone https://git.example.com/you/m2k-calendar-tools.git
-cd m2k-calendar-tools
-```
+**不需要 clone**：Docker Hub 上有現成的多平台 image
+（`a26007565/m2k-calendar`，支援 amd64 / arm64）。
+在 NAS 上建一個資料夾放 `docker-compose.yml`：
 
 ```yaml
 # docker-compose.yml
 services:
   m2k-calendar:
-    build: .
+    image: a26007565/m2k-calendar:latest
     container_name: m2k-calendar
     # issuer 必須是使用者瀏覽器與 claude.ai 都連得到的對外 HTTPS 網址
     command: ["--oauth", "--issuer", "https://m2kcal.xxx.synology.me",
@@ -47,9 +44,12 @@ volumes:
 ```
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 docker compose logs -f   # 應看到 Uvicorn running on http://0.0.0.0:8763
 ```
+
+（Synology 也可以在 Container Manager 的「專案」直接貼上這份 compose。
+想自己建 image 的話：clone 本 repo 後把 `image:` 換成 `build: .`。）
 
 **重要：只能單一容器/單行程。** OAuth 的進行中授權交易存在記憶體，
 開多個 replica 或負載平衡會讓授權流程隨機失敗。
@@ -92,7 +92,7 @@ docker compose logs -f   # 應看到 Uvicorn running on http://0.0.0.0:8763
 
 | 事項 | 做法 |
 |---|---|
-| 更新版本 | `git pull && docker compose up -d --build` |
+| 更新版本 | `docker compose pull && docker compose up -d` |
 | 備份 | 備 `m2k-data` volume（含 `bridge-key`：遺失＝全員 token 失效、需重新授權） |
 | 全面撤銷 | 刪掉 volume 裡的 `bridge-key` 後重啟（換金鑰＝所有已發 token 立即失效） |
 | 個人撤銷 | 使用者到 webmail 撤銷該應用程式專用密碼即可 |

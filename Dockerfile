@@ -1,6 +1,9 @@
 # m2k-calendar MCP server（HTTP / OAuth 公用部署用；本機 stdio 模式不需要 Docker）
 #
-# 建置：docker build -t m2k-calendar .
+# 現成 image（多平台 amd64/arm64）：docker pull a26007565/m2k-calendar
+# 發佈：docker buildx build --platform linux/amd64,linux/arm64 \
+#         -t a26007565/m2k-calendar:latest --push .
+# 本機建置：docker build -t m2k-calendar .
 # HTTP 模式（Basic pass-through）：
 #   docker run -d -p 8763:8763 m2k-calendar
 # OAuth 模式（claude.ai Connectors）——掛 /data volume 保留金鑰與 client 註冊：
