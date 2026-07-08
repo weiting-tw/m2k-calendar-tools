@@ -538,28 +538,46 @@ function openDetail(ev: Ev) {
     const d = el("div", "desc"); d.textContent = ev.description;
     card.appendChild(d);
   }
+  // 寄通知信選項（刪除/取消時用；寄信是對外動作，預設不勾）
+  const nrow = el("label", "rsvp");
+  const nchk = el("input") as HTMLInputElement;
+  nchk.type = "checkbox";
+  nrow.append(nchk, el("span", "", "刪除時寄取消通知信給與會者"));
+  if (ev.attendees.length) card.appendChild(nrow);
+
   const acts = el("div", "acts");
-  const del = el("button", "btn danger", "刪除") as HTMLButtonElement;
-  del.onclick = async () => {
-    if (del.dataset.arm !== "1") {
-      del.dataset.arm = "1";
-      del.textContent = ev.rrule ? "確認刪除整個系列？" : "確認刪除？";
-      return;
-    }
-    del.disabled = true; del.textContent = "刪除中…";
-    const res = await app.callServerTool({ name: "delete_event", arguments: { uid: ev.uid } })
-      .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
-    const txt = firstText(res);
-    if (txt.startsWith("錯誤")) { toast(txt, true); del.disabled = false; del.textContent = "刪除"; delete del.dataset.arm; return; }
-    toast("已刪除");
-    ov.remove();
-    fetchData(true);
+  const mkDel = (label: string, confirm: string, occurrence: string) => {
+    const b = el("button", "btn danger", label) as HTMLButtonElement;
+    b.onclick = async () => {
+      if (b.dataset.arm !== "1") {
+        b.dataset.arm = "1";
+        b.textContent = confirm;
+        return;
+      }
+      b.disabled = true; b.textContent = "刪除中…";
+      const args: Record<string, unknown> = { uid: ev.uid, notify: nchk.checked };
+      if (occurrence) args.occurrence = occurrence;
+      const res = await app.callServerTool({ name: "delete_event", arguments: args })
+        .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
+      const txt = firstText(res);
+      if (txt.startsWith("錯誤")) { toast(txt, true); b.disabled = false; b.textContent = label; delete b.dataset.arm; return; }
+      toast(occurrence ? "已取消這一次" : "已刪除");
+      ov.remove();
+      fetchData(true);
+    };
+    return b;
   };
+  if (ev.rrule) {
+    acts.append(mkDel("刪除這次", "確認取消這一次？", ev.start.slice(0, 16)),
+                mkDel("刪除系列", "確認刪除整個系列？", ""));
+  } else {
+    acts.append(mkDel("刪除", "確認刪除？", ""));
+  }
   const edit = el("button", "btn primary", "編輯") as HTMLButtonElement;
   edit.onclick = () => { ov.remove(); openForm(ev); };
   const close = el("button", "btn", "關閉") as HTMLButtonElement;
   close.onclick = () => ov.remove();
-  acts.append(del, edit, close);
+  acts.append(edit, close);
   card.appendChild(acts);
   ov.appendChild(card);
 }
@@ -589,24 +607,54 @@ function openForm(ev: Ev | null, presetStart?: Date) {
   atts.value = ev ? ev.attendees.map((a) => a.email).join(", ") : "";
   card.append(f("標題", title), f("開始", start), f("結束", end), f("地點", loc),
     f("描述", desc), f("與會者", atts));
-  // 重複與提醒只在建立時提供（book 支援；改既有事件的 RRULE 走文字指令較安全）
+  // 重複規則：建立時＝不重複/每天/每週/每月；編輯時＝預設「不變」
   const repeat = el("select") as HTMLSelectElement;
   const until = inp("date");
   const reminder = el("select") as HTMLSelectElement;
-  if (!ev) {
-    for (const [v, t] of [["", "不重複"], ["daily", "每天"], ["weekly", "每週"], ["monthly", "每月"]] as const) {
-      const o = el("option", "", t) as HTMLOptionElement; o.value = v; repeat.appendChild(o);
+  const repeatOpts: Array<[string, string]> = ev
+    ? [["__keep", "不變"], ["none", "取消重複"], ["daily", "每天"], ["weekly", "每週"], ["monthly", "每月"]]
+    : [["", "不重複"], ["daily", "每天"], ["weekly", "每週"], ["monthly", "每月"]];
+  for (const [v, t] of repeatOpts) {
+    const o = el("option", "", t) as HTMLOptionElement; o.value = v; repeat.appendChild(o);
+  }
+  const rrow = el("label", "frow");
+  rrow.append(el("span", "flab", "重複"), repeat, until);
+  until.style.display = "none";
+  const rchanged = () => repeat.value !== "" && repeat.value !== "__keep" && repeat.value !== "none";
+  repeat.onchange = () => { until.style.display = rchanged() ? "" : "none"; };
+
+  // 重複會議的編輯範圍：整個系列 or 只有這一次
+  let scopeOnce = false;
+  if (ev && ev.rrule) {
+    const srow = el("div", "rsvp");
+    srow.append(el("span", "flab", "套用範圍"));
+    for (const [v, t] of [["all", "整個系列"], ["one", `只有這一次（${ev.start}）`]] as const) {
+      const lab = el("label", "");
+      const rb = el("input") as HTMLInputElement;
+      rb.type = "radio"; rb.name = "scope"; rb.checked = v === "all";
+      rb.onchange = () => {
+        scopeOnce = v === "one";
+        rrow.style.display = scopeOnce ? "none" : "";  // 單次沒有重複規則可改
+      };
+      lab.append(rb, el("span", "", " " + t));
+      srow.appendChild(lab);
     }
+    card.appendChild(srow);
+  }
+  card.appendChild(rrow);
+  if (!ev) {
     for (const [v, t] of [["0", "無"], ["5", "5 分鐘前"], ["10", "10 分鐘前"], ["15", "15 分鐘前"], ["30", "30 分鐘前"], ["60", "1 小時前"]] as const) {
       const o = el("option", "", t) as HTMLOptionElement; o.value = v; reminder.appendChild(o);
     }
-    const rrow = el("label", "frow");
-    rrow.append(el("span", "flab", "重複"), repeat, until);
-    until.style.display = "none";
-    repeat.onchange = () => { until.style.display = repeat.value ? "" : "none"; };
-    card.append(rrow, f("提醒", reminder));
+    card.append(f("提醒", reminder));
   }
-  const note = el("div", "note", "註：CalDAV 無排程，異動不會自動寄通知信。");
+  // 寄通知信（iMIP）：對外動作，預設不勾
+  const nrow = el("label", "rsvp");
+  const nchk = el("input") as HTMLInputElement;
+  nchk.type = "checkbox";
+  nrow.append(nchk, el("span", "", ev ? "寄更新通知信給與會者" : "寄會議邀請信給與會者"));
+  card.appendChild(nrow);
+  const note = el("div", "note", "通知信以你的名義寄出（標準會議邀請格式）；不勾則只寫入行事曆。");
   card.appendChild(note);
   const acts = el("div", "acts");
   const save = el("button", "btn primary", ev ? "儲存變更" : "建立") as HTMLButtonElement;
@@ -625,6 +673,7 @@ function openForm(ev: Ev | null, presetStart?: Date) {
           location: loc.value.trim(), description: desc.value, attendees: emails,
           repeat: repeat.value, repeat_until: repeat.value ? until.value : "",
           reminder_minutes: parseInt(reminder.value || "0", 10),
+          notify: nchk.checked,
         }});
       } else {
         const old = new Set(ev.attendees.map((a) => a.email.toLowerCase()));
@@ -639,7 +688,13 @@ function openForm(ev: Ev | null, presetStart?: Date) {
         const rem = ev.attendees.map((a) => a.email).filter((x) => !now.has(x.toLowerCase()));
         if (add.length) args.add_attendees = add;
         if (rem.length) args.remove_attendees = rem;
+        if (scopeOnce) args.occurrence = ev.start.slice(0, 16);
+        else if (repeat.value !== "__keep") {
+          args.repeat = repeat.value;
+          if (rchanged() && until.value) args.repeat_until = until.value;
+        }
         if (Object.keys(args).length === 1) { toast("沒有任何變更"); ov.remove(); return; }
+        args.notify = nchk.checked;
         res = await app.callServerTool({ name: "update_event", arguments: args });
       }
       const txt = firstText(res);
