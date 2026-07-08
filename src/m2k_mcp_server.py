@@ -337,9 +337,27 @@ _CONTACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _CONTACTS_TTL = 900
 
 
+def _adb2_lookup(names: list[str]) -> tuple[dict, str]:
+    """公司通訊錄搜尋（選配）：需在 .env 設 webmail session（M2K_COOKIE 必要，
+    建議加 M2K_SSNID；SAML session 短效，過期須手動更新）。
+    回 ({name: [(姓名, email)]}, 註記)。未設定回 ({}, "")。
+    註：cookie 屬於部署者；公司通訊錄為全員一致的資料，多人共用模式下風險有限。"""
+    if not os.environ.get("M2K_COOKIE"):
+        return {}, ""
+    import m2kgroup
+    out = {}
+    for n in names:
+        try:
+            out[n] = m2kgroup.pattern_search(n)
+        except Exception as e:
+            return {}, f"（公司通訊錄查詢失敗：{e}）"
+    return out, ""
+
+
 def find_person(names: list[str], ctx: Context = None) -> str:
-    """依（模糊的）名字或暱稱查同事的 email。資料來源是你行事曆近一年
-    出現過的與會者與召集人（公司通訊錄需 webmail 登入，查不到）。
+    """依（模糊的）名字或暱稱查同事的 email。資料來源：
+    1) 公司通訊錄（若有設定 webmail session，全公司可查）
+    2) 你行事曆近一年出現過的與會者與召集人（永遠可用）。
     使用者提到模糊人名（如「把 pekka 加進會議」）時先用這個查；
     若有多個候選或查無此人，把結果列給使用者確認，**絕不自行猜測 email**。
     names 可一次查多個名字。"""
@@ -354,16 +372,38 @@ def find_person(names: list[str], ctx: Context = None) -> str:
             _CONTACTS_CACHE[key] = (time.time(), contacts)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
-    lines = [f"（資料來源：你行事曆近一年出現過的 {len(contacts)} 位聯絡人）"]
+    adb, adb_note = _adb2_lookup(names)
+    lines = []
+    if adb_note:
+        lines.append(adb_note)
+    lines.append(f"（資料來源：{'公司通訊錄 + ' if adb else ''}"
+                 f"行事曆近一年出現過的 {len(contacts)} 位聯絡人）")
     for n in names:
-        m = m2kcal.match_contacts(contacts, n)
-        if not m:
+        cal_hits = m2kcal.match_contacts(contacts, n)
+        adb_hits = adb.get(n, [])
+        seen = set()
+        rows = []
+        for nm, email in adb_hits[:8]:
+            e = email.lower()
+            if e in seen:
+                continue
+            seen.add(e)
+            extra = ""
+            rec = contacts.get(e)
+            if rec:
+                extra = f"，行事曆出現 {rec['count']} 次"
+            rows.append(f"  - {nm or e.split('@')[0]} <{email}>（公司通訊錄{extra}）")
+        for _score, email, rec in cal_hits[:5]:
+            if email in seen:
+                continue
+            seen.add(email)
+            nm = rec["name"] or email.split("@")[0]
+            rows.append(f"  - {nm} <{email}>（行事曆出現 {rec['count']} 次，最近 {rec['last'] or '?'}）")
+        if not rows:
             lines.append(f"「{n}」：找不到，請向使用者確認 email。")
             continue
-        lines.append(f"「{n}」：" + ("" if len(m) == 1 else f"（{len(m)} 個候選，請確認）"))
-        for _score, email, rec in m[:5]:
-            nm = rec["name"] or email.split("@")[0]
-            lines.append(f"  - {nm} <{email}>（出現 {rec['count']} 次，最近 {rec['last'] or '?'}）")
+        lines.append(f"「{n}」：" + ("" if len(rows) == 1 else f"（{len(rows)} 個候選，請確認）"))
+        lines += rows
     return "\n".join(lines)
 
 
