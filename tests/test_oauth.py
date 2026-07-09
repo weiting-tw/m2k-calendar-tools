@@ -190,6 +190,17 @@ with tempfile.TemporaryDirectory() as td:
         # 不同 IP 不受同一 IP 的節流影響（X-Forwarded-For 取第一個）
         resp2 = run(p3.login_submit(mk_post(run(new_txn(p3)), ip="8.8.8.8")))
         check("其他 IP 不被連坐", resp2.status_code == 401)
+        # 日誌自我輪替：超過門檻換檔到 .1，不會無限成長
+        logp = os.environ["M2K_AUTH_LOG"]
+        orig_max = mo.AUTH_LOG_MAX
+        mo.AUTH_LOG_MAX = 10  # 壓低門檻觸發輪替
+        try:
+            p3._record_fail("7.7.7.7")
+            check("日誌輪替產生 .1", os.path.isfile(logp + ".1"))
+            with open(logp) as f:
+                check("輪替後新檔只剩最新一筆", f.read().count("m2k-login-fail") == 1)
+        finally:
+            mo.AUTH_LOG_MAX = orig_max
     finally:
         mo.m2kcal.connect = orig_connect
         del os.environ["M2K_AUTH_LOG"]

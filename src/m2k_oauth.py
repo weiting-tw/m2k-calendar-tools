@@ -19,6 +19,7 @@ m2k OAuth bridge — 讓 claude.ai Connectors（手機/網頁版）能連 m2k MC
 import json
 import os
 import secrets
+import sys
 import time
 from urllib.parse import urlencode, urlparse, urlunparse
 
@@ -55,6 +56,8 @@ MAX_CLIENTS = 200            # DCR 開放註冊的上限：超過就淘汰最舊
 FAIL_WINDOW = 900            # 失敗計數的滑動視窗（秒）
 FAIL_LIMIT_IP = 8            # 同一來源 IP 視窗內的失敗上限
 FAIL_LIMIT_GLOBAL = 20       # 全 server 視窗內的失敗上限（斷路器）
+AUTH_LOG_MAX = 5 * 1024 * 1024  # auth.log 自我輪替門檻：超過換檔（保留一份 .1），
+                                # 否則攻擊流量會拿日誌灌爆磁碟
 DEFAULT_DOMAIN = os.environ.get("M2K_DOMAIN", "gss.com.tw")  # 帳號沒打 @ 時自動補
 
 _SEC_HEADERS = {             # /login 頁安全標頭：防點擊劫持、不快取憑證頁
@@ -215,11 +218,20 @@ class M2KOAuthProvider:
         path = os.environ.get("M2K_AUTH_LOG")
         if path:
             try:
+                try:
+                    if os.path.getsize(path) > AUTH_LOG_MAX:
+                        os.replace(path, path + ".1")  # 自我輪替，fail2ban 會照檔名重新跟
+                except FileNotFoundError:
+                    pass
                 with open(path, "a") as f:
                     f.write(time.strftime("%Y-%m-%d %H:%M:%S")
                             + f" m2k-login-fail ip={ip}\n")
-            except OSError:
-                pass
+            except OSError as e:
+                if not getattr(self, "_authlog_warned", False):
+                    self._authlog_warned = True
+                    print(f"警告：無法寫入 M2K_AUTH_LOG（{path}）：{e}；"
+                          "fail2ban 日誌功能停用（檢查掛載目錄對 UID 10001 的寫入權限）",
+                          file=sys.stderr)
 
     def _login_html(self, txn: str, error: str = "") -> str:
         err = f'<p class="err">{error}</p>' if error else ""

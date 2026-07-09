@@ -135,7 +135,11 @@ Docker Hub、有新版就自動拉取並重建容器（資料在 volume，不受
 若 NAS 已跑 fail2ban（如 crazymax/fail2ban）：
 
 1. m2k 的 compose 把 volume 改成 bind mount 讓 fail2ban 讀得到：
-   `- ./m2k-data:/data`，並在 fail2ban 容器加 `- ./m2k-data:/var/log/m2k:ro`
+   `- ./m2k-data:/data`，並在 fail2ban 容器加 `- ./m2k-data:/var/log/m2k:ro`。
+   **權限**：容器以 UID 10001 執行，bind mount 目錄要先
+   `sudo chown -R 10001:10001 ./m2k-data`，否則金鑰與日誌都寫不進去
+   （寫入失敗會在容器 log 印一次警告）。
+   日誌會**自我輪替**（超過 5MB 換檔保留一份 `auth.log.1`），不會無限成長。
 2. `filter.d/m2k-login.conf`：
    ```ini
    [Definition]
