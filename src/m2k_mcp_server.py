@@ -656,14 +656,39 @@ TOOLS = (list_calendars, search_events, find_free_slots, find_person)
 APP_TOOLS = (agenda, list_events, book, update_event, respond_event, delete_event)
 
 
+def _transport_security(issuer: str | None, port: int):
+    """SDK 的 DNS-rebinding 防護預設只放行 localhost 的 Host 標頭——
+    部署在反向代理後（Host=對外網域）會把已授權請求全擋成
+    421 Invalid Host header。這裡把 issuer 網域（OAuth 模式）與
+    M2K_ALLOWED_HOSTS 環境變數（HTTP 模式）加入白名單；
+    兩者皆未提供時回 None＝維持 SDK 預設（純本機情境）。"""
+    from urllib.parse import urlparse
+    from mcp.server.transport_security import TransportSecuritySettings
+    hosts = [h.strip() for h in os.environ.get("M2K_ALLOWED_HOSTS", "").split(",")
+             if h.strip()]
+    origins = []
+    if issuer:
+        p = urlparse(issuer)
+        if p.hostname:
+            hosts += [p.netloc, p.hostname]
+            origins += [f"{p.scheme}://{p.netloc}"]
+    if not hosts:
+        return None
+    hosts += ["localhost", "127.0.0.1", f"localhost:{port}", f"127.0.0.1:{port}"]
+    origins += [f"http://localhost:{port}", f"http://127.0.0.1:{port}"]
+    return TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
+
+
 def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
+    security = _transport_security(issuer, port or 8763)
     if oauth:
         import m2k_oauth
         provider, auth_settings = m2k_oauth.create(issuer)
-        server = FastMCP("m2k-calendar", auth_server_provider=provider, auth=auth_settings)
+        server = FastMCP("m2k-calendar", auth_server_provider=provider,
+                         auth=auth_settings, transport_security=security)
         m2k_oauth.add_login_routes(server, provider)
     else:
-        server = FastMCP("m2k-calendar")
+        server = FastMCP("m2k-calendar", transport_security=security)
     for f in TOOLS:
         server.tool()(f)
     for f in APP_TOOLS:
