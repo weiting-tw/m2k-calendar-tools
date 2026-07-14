@@ -87,3 +87,20 @@ body {
 .note { font-size: 11px; color: var(--tx2); margin-top: 6px; }
 .toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: var(--tx); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 12px; z-index: 20; max-width: 90vw; }
 .toast.err { background: #dc2626; color: #fff; }
+
+/* 手機 RWD：header 換行、週檢視橫向捲動保持欄寬可讀、加大點擊區、防 iOS 聚焦放大 */
+@media (max-width: 640px) {
+  .cal { height: 100dvh; border: none; border-radius: 0; }
+  .cal-hdr { flex-wrap: wrap; gap: 6px; padding: 8px; }
+  .cal-title { order: -1; width: 100%; text-align: center; font-size: 15px; }
+  .btn { padding: 7px 12px; font-size: 13px; }
+  /* 日檢視(1 欄)剛好塞滿不捲動；週檢視(7 欄)給最小欄寬並橫向捲動，不擠成不可讀 */
+  .wk { overflow-x: auto; }
+  .wk-head, .wk-allday, .wk-grid { min-width: calc(var(--ncols, 7) * 76px + 48px); }
+  .mo-cell { min-height: 52px; }
+  .card { width: 94vw; padding: 14px; max-height: 90vh; }
+  /* input 字級 ≥16px：iOS Safari 聚焦時才不會自動放大整頁 */
+  .frow input, .frow textarea, .frow select, .rsvp input { font-size: 16px; }
+  .flab { width: 44px; }
+  .acts { position: sticky; bottom: 0; background: var(--bg); padding-top: 8px; }
+}
