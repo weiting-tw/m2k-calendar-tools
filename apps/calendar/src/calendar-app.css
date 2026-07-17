@@ -68,6 +68,17 @@ body {
 .chip { background: color-mix(in srgb, var(--ac) 14%, var(--bg)); border-left: 2px solid var(--ac); border-radius: 3px; font-size: 10px; padding: 1px 3px; margin: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .chip.allday { background: color-mix(in srgb, var(--ac) 30%, var(--bg)); }
 
+/* 列表檢視（小內嵌高度用） */
+.ag { flex: 1; overflow-y: auto; min-height: 0; padding: 2px 8px 8px; }
+.ag-day { font-weight: 600; font-size: 12px; color: var(--tx2); padding: 8px 2px 3px; position: sticky; top: 0; background: var(--bg); }
+.ag-day.today { color: var(--ac); }
+.ag-ev { display: flex; gap: 8px; align-items: baseline; padding: 5px 4px; border-top: 1px solid var(--bd); cursor: pointer; font-size: 13px; }
+.ag-ev:hover { background: var(--bg2); }
+.ag-t { color: var(--tx2); font-variant-numeric: tabular-nums; flex: none; width: 42px; }
+.ag-title { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-loc { color: var(--tx2); font-size: 11px; flex: none; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-ev.declined { opacity: .45; text-decoration: line-through; }
+
 /* 詳情 / 表單 */
 .ov { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .card { background: var(--bg); border-radius: var(--rad); padding: 16px; width: min(420px, 92vw); max-height: 88vh; overflow-y: auto; box-shadow: 0 8px 30px rgba(0,0,0,.25); }

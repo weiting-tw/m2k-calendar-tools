@@ -32,6 +32,7 @@ let loading = false;
 let loadError = "";
 let canFullscreen = false;
 let displayMode = "inline";
+let hostH: number | null = null;  // host 給的內嵌可用高度（containerDimensions），null=未知
 
 const root = document.getElementById("root")!;
 const app = new App({ name: "m2k Calendar", version: "1.0.0" });
@@ -168,11 +169,19 @@ function fmtDT(d: Date): string { return `${dstr(d)} ${hhmm(d)}`; }
 function render() {
   root.innerHTML = "";
   const wrap = el("div", "cal" + (displayMode === "fullscreen" ? " fs" : ""));
+  // 自適應 host 內嵌高度：固定 480 超過 host 上限會被裁成一小條（見 containerDimensions）。
+  // 全螢幕交給 CSS 的 100dvh；內嵌時用 host 給的高度，未知才回退 480。
+  if (displayMode !== "fullscreen") {
+    wrap.style.height = hostH ? `${hostH}px` : "480px";
+  }
   wrap.appendChild(renderHeader());
   const body = el("div", "cal-body");
+  // 內嵌高度太小時，時間格只剩幾像素沒有意義 → 改用可讀的列表檢視
+  const compact = displayMode !== "fullscreen" && hostH != null && hostH < 360;
   // 三態：快取涵蓋 → 直接顯示；抓取中 → 載入畫面；失敗 → 錯誤 + 重試
   if (covered()) {
-    body.appendChild(view === "month" ? renderMonth() : renderTimeGrid());
+    body.appendChild(compact ? renderAgenda()
+                     : view === "month" ? renderMonth() : renderTimeGrid());
   } else if (loading) {
     body.appendChild(el("div", "cal-loading", "載入中…"));
   } else if (loadError) {
@@ -187,10 +196,35 @@ function render() {
   }
   wrap.appendChild(body);
   root.appendChild(wrap);
-  if (view !== "month" && covered()) {
+  if (!compact && view !== "month" && covered()) {
     const grid = root.querySelector(".wk-scroll");
     if (grid) grid.scrollTop = HOUR_H * DAY_START_SCROLL - 8;
   }
+}
+
+// 列表檢視：小內嵌高度下用，依天分組列出目前範圍內的行程，任何高度都可讀
+function renderAgenda(): HTMLElement {
+  const { start, end } = rangeFor(view, anchor);
+  const today = data ? parseDT(data.today) : new Date();
+  const cont = el("div", "ag");
+  let any = false;
+  for (let d = new Date(start); d < end; d = addDays(d, 1)) {
+    const evs = eventsOfDay(d);
+    if (!evs.length) continue;
+    any = true;
+    cont.appendChild(el("div", "ag-day" + (sameDay(d, today) ? " today" : ""),
+      `${d.getMonth() + 1}/${d.getDate()}（週${WK[d.getDay()]}）`));
+    for (const e of evs) {
+      const row = el("div", "ag-ev" + (myPartstat(e) === "DECLINED" ? " declined" : ""));
+      row.append(el("span", "ag-t", e.allday ? "全天" : hhmm(parseDT(e.start))),
+                 el("span", "ag-title", e.summary));
+      if (e.location) row.append(el("span", "ag-loc", "@" + e.location));
+      row.onclick = () => openDetail(e);
+      cont.appendChild(row);
+    }
+  }
+  if (!any) cont.appendChild(el("div", "cal-loading", "這段期間沒有行程"));
+  return cont;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -733,8 +767,17 @@ function handleHostContext(ctx: McpUiHostContext) {
   }
   const fs = !!ctx.availableDisplayModes?.includes("fullscreen");
   const dm = ctx.displayMode ?? displayMode;
-  if (fs !== canFullscreen || dm !== displayMode) {
-    canFullscreen = fs; displayMode = dm; render();
+  // 依 host 容器高度算出目標高度，避免固定高被裁：
+  // 固定 height → 填滿它；maxHeight 是上限 → 取 min(自然高 480, 上限)。
+  const cd = ctx.containerDimensions as
+    { height?: number; maxHeight?: number } | undefined;
+  let h: number | null = null;
+  if (cd) {
+    if (typeof cd.height === "number") h = cd.height;
+    else if (typeof cd.maxHeight === "number") h = Math.min(480, cd.maxHeight);
+  }
+  if (fs !== canFullscreen || dm !== displayMode || h !== hostH) {
+    canFullscreen = fs; displayMode = dm; hostH = h; render();
   }
 }
 
