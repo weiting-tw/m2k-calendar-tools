@@ -35,7 +35,7 @@ let displayMode = "inline";
 let hostH: number | null = null;  // host 給的內嵌可用高度（containerDimensions），null=未知
 
 const root = document.getElementById("root")!;
-const app = new App({ name: "m2k Calendar", version: "1.0.0" });
+const app = new App({ name: "m2k Calendar", version: "1.3.0" });
 
 // ---------- 日期工具 ----------
 const pad = (n: number) => String(n).padStart(2, "0");

@@ -40,6 +40,7 @@ from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 import m2kcal
+from _version import __version__, SOURCE_URL
 
 SCOPE = "m2k"
 ACCESS_TTL = 3600            # access token 1 小時
@@ -255,6 +256,7 @@ border-radius:8px;font-size:14px;cursor:pointer}}button:disabled{{background:#94
 <button id="sb" type="submit">驗證並授權</button>
 <p class="note">憑證只用來即時驗證並加密封入你的存取權杖，伺服器不儲存。
 撤銷方式：到 webmail 撤銷該應用程式專用密碼。</p>
+<p class="note">m2k-calendar v{__version__} · <a href="{SOURCE_URL}" target="_blank" rel="noopener" style="color:#94a3b8">原始碼</a></p>
 </form>
 <script>
 document.querySelector("form").addEventListener("submit", function () {{

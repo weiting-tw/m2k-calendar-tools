@@ -144,7 +144,10 @@ def _overlap_note(cal, s, e, exclude_uid=None) -> str:
 
 def _notify_note(auth, ics: str, method: str, subject: str, body: str,
                  attendees: list[str]) -> str:
-    """寄 iMIP 通知信（用使用者自己的 SMTP 身分），回報告文字。失敗不拋錯。"""
+    """寄 iMIP 通知信（用使用者自己的 SMTP 身分），回報告文字。失敗不拋錯。
+    部署層可設 M2K_DISABLE_NOTIFY=1 整台關閉寄信能力（保守部署用）。"""
+    if os.environ.get("M2K_DISABLE_NOTIFY", "").strip() in ("1", "true", "yes"):
+        return "  （此部署已停用寄信功能，未寄通知）"
     to = [a for a in (attendees or []) if a.strip()
           and a.strip().lower() != auth[1].lower()]  # 不用通知自己
     if not to:
