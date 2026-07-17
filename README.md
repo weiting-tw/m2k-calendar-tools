@@ -1,6 +1,6 @@
 # m2k 行事曆工具組 — 使用說明
 
-![version](https://img.shields.io/badge/version-1.3.0-blue)
+![version](https://img.shields.io/badge/version-1.4.0-blue)
 [![docker](https://img.shields.io/docker/v/a26007565/m2k-calendar?sort=semver&label=docker%20hub)](https://hub.docker.com/r/a26007565/m2k-calendar)
 
 一組交付物，共用同一套已驗證的 m2k（Mail2000）行為分析。挑符合情境的用。
