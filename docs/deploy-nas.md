@@ -116,6 +116,9 @@ Docker Hub、有新版就自動拉取並重建容器（資料在 volume，不受
 ## 五、安全注意事項
 
 - 伺服器**不儲存任何帳密**：憑證加密封在 token 內、每請求解密 pass-through。
+- **寄信能力預設關閉**：iMIP 通知信（book/update/delete 的 notify）**預設停用**；
+  要開放需在 compose 環境變數設 `M2K_DISABLE_NOTIFY=0`。開放後仍只能以
+  使用者自己的身分寄、且 notify 預設不勾。
 - 內建防護：`/login` 同一授權交易錯 5 次作廢、動態註冊 client 有上限（超過淘汰最舊）、
   聯絡人快取有 TTL 與數量上限。
 - **內建失敗節流（重要）**：Mail2000 會把「短時間多次錯誤密碼」的來源 IP
