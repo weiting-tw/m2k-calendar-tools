@@ -293,6 +293,12 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
 <li>貼上 <code>{mcp_url}</code></li>
 <li>授權時輸入 m2k 帳號＋<b>應用程式專用密碼</b>（於 webmail 設定產生，非登入密碼）</li>
 </ol>
+<p><b>連接方式（ChatGPT）：</b></p>
+<ol>
+<li>設定 → 連接器 → 進階設定，開啟「開發者模式」</li>
+<li>連接器 →「建立」→ MCP 伺服器 URL 貼上 <code>{mcp_url}</code>，驗證選 OAuth</li>
+<li>授權時輸入的帳密同上</li>
+</ol>
 <p class="note">憑證只用來即時驗證並加密封入你的存取權杖，伺服器不儲存；
 撤銷方式：到 webmail 撤銷該應用程式專用密碼。</p>
 <p class="note">m2k-calendar v{__version__} · <a href="{SOURCE_URL}" target="_blank" rel="noopener" style="color:#94a3b8">原始碼</a></p>
