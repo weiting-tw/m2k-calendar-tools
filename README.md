@@ -1,10 +1,11 @@
 # m2k 行事曆工具組 — 使用說明
 
-![version](https://img.shields.io/badge/version-1.4.0-blue)
 [![docker](https://img.shields.io/docker/v/a26007565/m2k-calendar?sort=semver&label=docker%20hub)](https://hub.docker.com/r/a26007565/m2k-calendar)
 
 一組交付物，共用同一套已驗證的 m2k（Mail2000）行為分析。挑符合情境的用。
 版本以 `src/_version.py` 為單一來源（image tag、登入頁 footer 都引用它）。
+發佈全自動：bump `_version.py` push 到 main → GitHub Actions 自動 build 多平台
+image 推上 Docker Hub（`:版號` + `:latest`）→ 部署端 Watchtower 自動拉新版。
 
 ## 專案結構
 
