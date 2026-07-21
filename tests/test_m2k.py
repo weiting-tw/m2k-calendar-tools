@@ -288,4 +288,20 @@ cxl = m2kcal.imip_ics(rsrc, "cancel")
 check("iMIP CANCEL 帶 STATUS", "METHOD:CANCEL" in cxl and "STATUS:CANCELLED" in cxl)
 check("iMIP 冪等（不重複 METHOD）", m2kcal.imip_ics(inv, "REQUEST").count("METHOD:") == 1)
 
+# 12) render_grouped：描述截斷 200 字 + URL 抽出
+long_desc = "開會前請先讀文件。" * 30  # >200 字
+desc_ics = m2kcal.build_ics(
+    "有描述", s, e, uid="U30", stamp="Z",
+    desc=long_desc + r"\n會議連結 https://teams.microsoft.com/l/meetup/abc 備用 "
+                     r"https://links.example.com/xyz")
+g = m2kcal.render_grouped([_fake(desc_ics)])
+check("render_grouped 描述截斷 200 字", "描述: " in g
+      and any(len(ln.split("描述: ", 1)[1]) == 201 and ln.endswith("…")
+              for ln in g.splitlines() if "描述: " in ln))
+check("render_grouped URL 抽出（含截斷後段）",
+      "🔗 https://teams.microsoft.com/l/meetup/abc" in g
+      and "🔗 https://links.example.com/xyz" in g)
+check("render_grouped 無描述不印欄位",
+      "描述:" not in m2kcal.render_grouped([_fake(timed)]))
+
 print("\n全部通過 ✅")

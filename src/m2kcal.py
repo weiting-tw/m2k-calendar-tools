@@ -339,6 +339,11 @@ def render_grouped(events):
             extra.append(f"與會 {len(r['atts'])} 人: {ppl}")
         if extra:
             out.append("       " + " · ".join(extra))
+        if r["desc"]:
+            d = " ".join(r["desc"].split())
+            out.append("       描述: " + (d[:200] + "…" if len(d) > 200 else d))
+            for u in dict.fromkeys(_URL_RE.findall(r["desc"])):
+                out.append(f"       🔗 {u}")
         if r["uid"]:
             out.append(f"       id: {r['uid']}")
     return "\n".join(out) if out else "（無事件）"
