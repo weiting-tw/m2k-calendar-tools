@@ -65,6 +65,7 @@ except ImportError:
     sys.exit('需要 mcp 套件：pip install "mcp[cli]"')
 
 import m2kcal  # 重用既有 CalDAV / ICS 邏輯
+from _version import __version__
 
 m2kcal.load_dotenv()
 
@@ -692,6 +693,9 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
         m2k_oauth.add_login_routes(server, provider)
     else:
         server = FastMCP("m2k-calendar", transport_security=security)
+    # FastMCP 沒開放 version 參數，低階 Server 預設回報 mcp SDK 版本——
+    # 直接設定讓 initialize 的 serverInfo 顯示本服務版本
+    server._mcp_server.version = __version__
     for f in TOOLS:
         server.tool()(f)
     for f in APP_TOOLS:
