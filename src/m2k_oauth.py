@@ -286,8 +286,7 @@ p,li{{font-size:13px;color:#475569;margin:6px 0}}ol{{padding-left:18px;margin:6p
 code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-break:break-all}}
 .note{{font-size:11px;color:#94a3b8}}</style></head><body>
 <div class="card"><h1>📅 m2k 行事曆 MCP server</h1>
-<p>把 Mail2000（m2k）行事曆接進 Claude 等 MCP 用戶端：
-查行程、建立/修改/回覆會議、互動行事曆畫面。</p>
+<p>讓 Claude 等 AI 助理查詢和管理你的 Mail2000（m2k）行事曆。</p>
 <p><b>連接方式（claude.ai）：</b></p>
 <ol>
 <li>設定 → 連接器（Connectors）→ 新增自訂連接器</li>
