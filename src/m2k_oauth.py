@@ -275,6 +275,33 @@ p{font-size:13px;color:#475569}</style></head><body>
 <div class="card"><h1>✅ 授權完成</h1>
 <p>m2k 行事曆已成功連接，可以關閉此視窗並回到應用程式。</p></div></body></html>"""
 
+    def _index_html(self) -> str:
+        mcp_url = getattr(self, "issuer", "") + "/mcp"
+        return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>m2k 行事曆 MCP server</title>
+<style>body{{font-family:-apple-system,"PingFang TC",sans-serif;background:#f1f5f9;display:flex;
+justify-content:center;padding-top:8vh;margin:0}}.card{{background:#fff;padding:28px;border-radius:12px;
+box-shadow:0 4px 16px rgba(0,0,0,.08);width:360px}}h1{{font-size:17px;margin:0 0 6px}}
+p,li{{font-size:13px;color:#475569;margin:6px 0}}ol{{padding-left:18px;margin:6px 0}}
+code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-break:break-all}}
+.note{{font-size:11px;color:#94a3b8}}</style></head><body>
+<div class="card"><h1>📅 m2k 行事曆 MCP server</h1>
+<p>把 Mail2000（m2k）行事曆接進 Claude 等 MCP 用戶端：
+查行程、建立/修改/回覆會議、互動行事曆畫面。</p>
+<p><b>連接方式（claude.ai）：</b></p>
+<ol>
+<li>設定 → 連接器（Connectors）→ 新增自訂連接器</li>
+<li>貼上 <code>{mcp_url}</code></li>
+<li>授權時輸入 m2k 帳號＋<b>應用程式專用密碼</b>（於 webmail 設定產生，非登入密碼）</li>
+</ol>
+<p class="note">憑證只用來即時驗證並加密封入你的存取權杖，伺服器不儲存；
+撤銷方式：到 webmail 撤銷該應用程式專用密碼。</p>
+<p class="note">m2k-calendar v{__version__} · <a href="{SOURCE_URL}" target="_blank" rel="noopener" style="color:#94a3b8">原始碼</a></p>
+</div></body></html>"""
+
+    async def index_page(self, request: Request) -> Response:
+        return self._page(self._index_html())
+
     def _page(self, html: str, status: int = 200) -> HTMLResponse:
         return HTMLResponse(html, status_code=status, headers=_SEC_HEADERS)
 
@@ -398,6 +425,7 @@ def create(issuer: str, key_path=DEFAULT_KEY_PATH,
     """建立 provider 與 AuthSettings。issuer 需為用戶端可達的對外網址。"""
     provider = M2KOAuthProvider(TokenCrypto(TokenCrypto.load_key(key_path)), clients_path)
     issuer = issuer.rstrip("/")
+    provider.issuer = issuer  # 首頁介紹用（組 /mcp 連接網址）
     settings = AuthSettings(
         issuer_url=AnyHttpUrl(issuer),
         resource_server_url=AnyHttpUrl(issuer + "/mcp"),
@@ -409,5 +437,6 @@ def create(issuer: str, key_path=DEFAULT_KEY_PATH,
 
 
 def add_login_routes(server, provider: M2KOAuthProvider) -> None:
+    server.custom_route("/", methods=["GET"])(provider.index_page)
     server.custom_route("/login", methods=["GET"])(provider.login_page)
     server.custom_route("/login", methods=["POST"])(provider.login_submit)
