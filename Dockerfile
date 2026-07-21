@@ -1,8 +1,10 @@
 # m2k-calendar MCP server（HTTP / OAuth 公用部署用；本機 stdio 模式不需要 Docker）
 #
 # 現成 image（多平台 amd64/arm64）：docker pull a26007565/m2k-calendar
-# 發佈：docker buildx build --platform linux/amd64,linux/arm64 \
-#         -t a26007565/m2k-calendar:latest --push .
+# 發佈：bump src/_version.py 後 push main，GitHub Actions 自動 build+push
+#   （.github/workflows/docker.yml）；手動備援：
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -t a26007565/m2k-calendar:latest --push .
 # 本機建置：docker build -t m2k-calendar .
 # HTTP 模式（Basic pass-through）：
 #   docker run -d -p 8763:8763 m2k-calendar
