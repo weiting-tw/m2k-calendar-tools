@@ -40,9 +40,23 @@ async def test_stdio():
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
             assert tools == ["agenda", "book", "calendar_data", "delete_event",
-                             "find_free_slots", "find_person", "list_calendars",
-                             "list_events", "respond_event", "search_events",
+                             "find_free_slots", "find_person", "get_event",
+                             "list_calendars", "list_events", "list_invitations",
+                             "respond_event", "search_events",
                              "show_calendar", "update_event"], tools
+            prompts = sorted(p.name for p in (await s.list_prompts()).prompts)
+            assert prompts == ["morning-brief", "reschedule",
+                               "schedule-meeting", "weekly-review"], prompts
+            pr = await s.get_prompt("schedule-meeting",
+                                    {"attendees": "a@x.com", "topic": "週會"})
+            ptxt = pr.messages[0].content.text
+            assert "find_person" in ptxt and "find_free_slots" in ptxt, ptxt[:80]
+            print("prompts:", prompts)
+            resources = {str(r.uri) for r in (await s.list_resources()).resources}
+            assert "m2k://whoami" in resources, resources
+            who = await s.read_resource("m2k://whoami")
+            assert "fake@example.com" in who.contents[0].text  # stdio 模式回環境變數身分
+            print("whoami resource: OK")
             ui_tools = {t.name: (t.meta or {}).get("ui", {})
                         for t in (await s.list_tools()).tools if t.meta}
             uri = ui_tools["show_calendar"]["resourceUri"]

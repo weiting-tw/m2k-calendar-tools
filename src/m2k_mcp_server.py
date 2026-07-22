@@ -90,9 +90,9 @@ def _auth(ctx):
     return (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), user, pwd)
 
 
-def _cal(auth):
+def _cal(auth, name=""):
     p = m2kcal.connect(auth)
-    return m2kcal.pick_calendar(p)
+    return m2kcal.pick_calendar(p, name.strip() or None)
 
 
 def list_calendars(ctx: Context = None) -> str:
@@ -104,10 +104,11 @@ def list_calendars(ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-def agenda(days: int = 7, ctx: Context = None) -> str:
-    """看未來 N 天的行程（依天分組）。days 預設 7。"""
+def agenda(days: int = 7, calendar: str = "", ctx: Context = None) -> str:
+    """看未來 N 天的行程（依天分組）。days 預設 7。
+    calendar 指定行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
-        cal = _cal(_auth(ctx))
+        cal = _cal(_auth(ctx), calendar)
         start = dt.datetime.now()
         end = start + dt.timedelta(days=days)
         events = cal.search(start=start, end=end, event=True, expand=True)
@@ -116,12 +117,14 @@ def agenda(days: int = 7, ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-def list_events(start: str, end: str, ctx: Context = None) -> str:
-    """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。"""
+def list_events(start: str, end: str, calendar: str = "",
+                ctx: Context = None) -> str:
+    """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。
+    calendar 指定行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
         s = m2kcal.parse_when(start)
         e = m2kcal.parse_when(end)
-        cal = _cal(_auth(ctx))
+        cal = _cal(_auth(ctx), calendar)
         events = cal.search(start=s, end=e, event=True, expand=True)
         return f"{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
     except m2kcal.M2KError as e:
@@ -163,46 +166,55 @@ def _notify_note(auth, ics: str, method: str, subject: str, body: str,
 
 def book(title: str, start: str, end: str = "", location: str = "",
          description: str = "", attendees: list[str] | None = None,
-         repeat: str = "", repeat_until: str = "", reminder_minutes: int = 0,
+         repeat: str = "", repeat_until: str = "",
+         repeat_byday: list[str] | None = None, repeat_interval: int = 0,
+         reminder_minutes: int = 0, all_day: bool = False, calendar: str = "",
          notify: bool = False, ctx: Context = None) -> str:
     """建立會議。
     title 標題；start/end 時間 'YYYY-MM-DD HH:MM'（end 省略則 +1 小時，台北時間）；
     location 地點；description 描述；attendees 與會者 email 清單；
     repeat 重複頻率 daily/weekly/monthly（省略＝不重複）；repeat_until 重複截止 'YYYY-MM-DD'；
+    repeat_byday 指定星期（weekly 用，如 ["TU","TH"]＝每週二四；monthly 可帶序數如 ["3FR"]＝
+    每月第三個週五）；repeat_interval 每 N 個週期一次（如 weekly+2＝每兩週）；
     reminder_minutes 開始前 N 分鐘提醒（0＝不提醒）；
+    all_day=true 建全天事件（start/end 給 'YYYY-MM-DD'，end 省略＝單日）；
+    calendar 指定寫入的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）；
     notify=true 時以你的名義寄標準會議邀請信（iMIP）給與會者——寄信是對外動作，
     使用者明確要求通知才帶 true。若時段與現有行程重疊會附警告。
     """
-    freq = {"daily": "DAILY", "weekly": "WEEKLY",
-            "monthly": "MONTHLY"}.get(repeat.strip().lower()) if repeat else None
-    if repeat and not freq:
-        return "錯誤：repeat 需為 daily / weekly / monthly。"
     try:
         s = m2kcal.parse_when(start)
-        e = m2kcal.parse_when(end) if end else s + dt.timedelta(hours=1)
+        if all_day:
+            # DTEND 為排他日期：使用者給的 end 是「最後一天」，+1 天
+            e = (m2kcal.parse_when(end) + dt.timedelta(days=1)) if end \
+                else s + dt.timedelta(days=1)
+        else:
+            e = m2kcal.parse_when(end) if end else s + dt.timedelta(hours=1)
         rrule = ""
-        if freq:
-            rrule = f"FREQ={freq}"
-            if repeat_until:
-                u = m2kcal.parse_when(repeat_until).replace(
-                    hour=23, minute=59, second=59, tzinfo=m2kcal.TW_TZ)
-                rrule += ";UNTIL=" + m2kcal._zulu(u)
+        if repeat or repeat_byday or repeat_interval:
+            u = (m2kcal.parse_when(repeat_until).replace(
+                     hour=23, minute=59, second=59, tzinfo=m2kcal.TW_TZ)
+                 if repeat_until else None)
+            rrule = m2kcal.compose_rrule(repeat, until=u, byday=repeat_byday,
+                                         interval=repeat_interval)
         auth = _auth(ctx) or m2kcal.creds()
         url, user, pwd = auth
-        cal = _cal(auth)
-        note = _overlap_note(cal, s, e)
+        cal = _cal(auth, calendar)
+        note = "" if all_day else _overlap_note(cal, s, e)
         uid = str(uuid.uuid4())
         ics = m2kcal.build_ics(title, s, e, location, description,
                                attendees=attendees, organizer=user, uid=uid,
-                               rrule=rrule, reminder_minutes=reminder_minutes)
+                               rrule=rrule, reminder_minutes=reminder_minutes,
+                               all_day=all_day)
         put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     lines = ["已建立並驗證：",
              f"  標題: {info.get('SUMMARY', title)}",
-             f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
+             f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"
+             + ("（全天）" if all_day else "")]
     if rrule:
-        lines.append(f"  重複: {repeat}" + (f"（至 {repeat_until}）" if repeat_until else ""))
+        lines.append(f"  重複: {rrule}")
     if reminder_minutes:
         lines.append(f"  提醒: 開始前 {reminder_minutes} 分鐘")
     if put_status not in (200, 201, 204):
@@ -226,37 +238,40 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                  add_attendees: list[str] | None = None,
                  remove_attendees: list[str] | None = None,
                  occurrence: str = "", repeat: str = "", repeat_until: str = "",
+                 repeat_byday: list[str] | None = None, repeat_interval: int = 0,
+                 reminder_minutes: int | None = None,
                  notify: bool = False, ctx: Context = None) -> str:
     """修改既有會議。uid 取自 agenda / list_events 輸出的「id:」欄位。
     只更新有給的欄位：title 標題；start/end 時間 'YYYY-MM-DD HH:MM'；
     location 地點；description 描述；add_attendees / remove_attendees
-    增減與會者 email 清單（其餘與會者保留）。
+    增減與會者 email 清單（其餘與會者保留）；
+    reminder_minutes 改提醒：N＝開始前 N 分鐘、0＝移除提醒（省略＝不變）。
     重複會議：預設改整個系列；occurrence='該次原開始時間' 時只改那一次
     （實作＝該次從系列剔除並另建獨立會議，Mail2000 不支援原生單次例外）；
-    repeat 改重複規則（none=取消重複/daily/weekly/monthly，搭配 repeat_until）。
+    repeat 改重複規則（none=取消重複/daily/weekly/monthly，搭配 repeat_until、
+    repeat_byday 如 ["TU","TH"]、repeat_interval 每 N 週期一次）。
     notify=true 以你的名義寄更新通知信（iMIP）給與會者——使用者明確要求才帶。
     改時間時若與現有行程重疊會附警告。
     """
     if not any([title, start, end, location, description,
-                add_attendees, remove_attendees, repeat]):
+                add_attendees, remove_attendees, repeat,
+                reminder_minutes is not None]):
         return "錯誤：沒有任何要修改的欄位。"
     if occurrence and repeat:
         return "錯誤：occurrence（只改某一次）不能與 repeat（改整串規則）同時使用。"
-    rrule = None
-    if repeat:
-        if repeat.strip().lower() == "none":
-            rrule = ""
-        else:
-            freq = {"daily": "DAILY", "weekly": "WEEKLY",
-                    "monthly": "MONTHLY"}.get(repeat.strip().lower())
-            if not freq:
-                return "錯誤：repeat 需為 none / daily / weekly / monthly。"
-            rrule = f"FREQ={freq}"
-            if repeat_until:
-                u = m2kcal.parse_when(repeat_until).replace(
-                    hour=23, minute=59, second=59, tzinfo=m2kcal.TW_TZ)
-                rrule += ";UNTIL=" + m2kcal._zulu(u)
+    if occurrence and reminder_minutes is not None:
+        return "錯誤：occurrence 拆出單次時暫不支援改提醒，請先拆出後再對新 id 修改。"
     try:
+        rrule = None
+        if repeat:
+            if repeat.strip().lower() == "none":
+                rrule = ""
+            else:
+                u = (m2kcal.parse_when(repeat_until).replace(
+                         hour=23, minute=59, second=59, tzinfo=m2kcal.TW_TZ)
+                     if repeat_until else None)
+                rrule = m2kcal.compose_rrule(repeat, until=u, byday=repeat_byday,
+                                             interval=repeat_interval)
         auth = _auth(ctx) or m2kcal.creds()
         cal = _cal(auth)
         ev = m2kcal.find_event_by_uid(cal, uid)
@@ -302,7 +317,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                 end=m2kcal.parse_when(end) if end else None,
                 location=location or None, desc=description or None,
                 add_attendees=add_attendees, remove_attendees=remove_attendees,
-                rrule=rrule)
+                rrule=rrule, reminder=reminder_minutes)
             new_seq = m2kcal.parse_ics(ics).get("SEQUENCE")
             put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth,
                                                      put_url=str(ev.url),
@@ -314,8 +329,10 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
              f"  標題: {info.get('SUMMARY', '?')}",
              f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
     if repeat:
-        lines.append("  重複: " + ("已取消" if rrule == "" else repeat
-                                   + (f"（至 {repeat_until}）" if repeat_until else "")))
+        lines.append("  重複: " + ("已取消" if rrule == "" else rrule))
+    if reminder_minutes is not None:
+        lines.append("  提醒: " + ("已移除" if reminder_minutes == 0
+                                   else f"開始前 {reminder_minutes} 分鐘"))
     if put_status not in (200, 201, 204):
         lines.append(f"  （伺服器 PUT 回 {put_status}，但已驗證異動確實寫入）")
     if info.get("location"):
@@ -332,6 +349,50 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
     if note:
         lines.append(note)
     return "\n".join(lines)
+
+
+def get_event(uid: str, ctx: Context = None) -> str:
+    """看單一會議的完整詳情：描述全文（不截斷）、每位與會者的回覆狀態
+    （已接受/已拒絕/暫定/未回覆）、重複規則、提醒設定。
+    uid 取自 agenda / list_events / search_events 輸出的「id:」欄位。"""
+    try:
+        cal = _cal(_auth(ctx))
+        ev = m2kcal.find_event_by_uid(cal, uid)
+        return m2kcal.render_detail(ev)
+    except m2kcal.M2KError as e:
+        return f"錯誤：{e}"
+
+
+def list_invitations(days: int = 14, ctx: Context = None) -> str:
+    """掃描收件匣最近 N 天的會議邀請信（iMIP），標出你尚未回覆的邀請。
+    回覆請用 respond_event(uid, accept/tentative/decline)。"""
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+        invs = m2kcal.imap_recent_invitations(auth[1], auth[2], days=days)
+    except m2kcal.M2KError as e:
+        return f"錯誤：{e}"
+    if not invs:
+        return f"最近 {days} 天收件匣沒有會議邀請。"
+    cal = None
+    out = [f"最近 {days} 天收件匣共 {len(invs)} 封會議邀請："]
+    me = auth[1].lower()
+    for inv in invs[:20]:
+        status = "？ 無法比對行事曆"
+        if inv["uid"]:
+            try:
+                cal = cal or _cal(auth)
+                ev = cal.event_by_uid(inv["uid"])
+                ps = next((p for _, em, p in m2kcal._event_rows([ev])[0]["atts"]
+                           if em.lower() == me), "")
+                status = m2kcal._PS_ZH.get((ps or "").upper(), "· 未回覆")
+            except Exception:
+                status = "！ 不在行事曆上（可能已被移除或尚未同步）"
+        out.append(f"- {inv['summary'] or inv['subject']}（{inv['start'] or '?'}）"
+                   f" 召集: {inv['organizer'] or '?'}")
+        out.append(f"    狀態: {status}" + (f"  id: {inv['uid']}" if inv["uid"] else ""))
+    if len(invs) > 20:
+        out.append(f"（僅列前 20 封，共 {len(invs)} 封）")
+    return "\n".join(out)
 
 
 # ---------- MCP App：互動行事曆 UI ----------
@@ -605,18 +666,38 @@ def search_events(keyword: str, start: str = "", end: str = "",
 
 def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
                     day_start: str = "09:00", day_end: str = "18:00",
-                    include_weekends: bool = False, ctx: Context = None) -> str:
-    """找自己行事曆的空檔（free-busy）。回傳工作時段內長度足夠的可預約時間。
+                    include_weekends: bool = False,
+                    attendees: list[str] | None = None,
+                    ctx: Context = None) -> str:
+    """找空檔（free-busy）。回傳工作時段內長度足夠的可預約時間。
     duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
-    day_start/day_end 每天的可排時段；include_weekends 是否含週末。"""
+    day_start/day_end 每天的可排時段；include_weekends 是否含週末；
+    attendees 一併查這些人的忙碌時段、回傳大家都有空的時間
+    （email 清單，可先用 find_person 查；伺服器不支援查他人時會明講）。"""
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
              + dt.timedelta(days=days))
-        cal = _cal(_auth(ctx))
+        auth = _auth(ctx) or m2kcal.creds()
+        p = m2kcal.connect(auth)
+        cal = m2kcal.pick_calendar(p)
         fb = cal.freebusy_request(s, e)
         busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
+        others_note = ""
+        if attendees:
+            try:
+                others = m2kcal.freebusy_others(auth, p, attendees, s, e)
+                for em, periods in others.items():
+                    busy += periods
+                missing = [a for a in attendees if a.strip().lower() not in others]
+                if missing:
+                    others_note = ("  ⚠ 查不到這些人的忙碌資料（結果未包含他們）: "
+                                   + ", ".join(missing))
+            except m2kcal.M2KError as err:
+                return (f"錯誤：{err}\n"
+                        "（此伺服器無法查他人空檔時，只能各自用 find_free_slots "
+                        "查自己的，再人工協調。）")
         slots = m2kcal.free_slots(busy, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
     except m2kcal.M2KError as err:
@@ -627,8 +708,11 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         return (f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
                 f"找不到 ≥ {duration_minutes} 分鐘的空檔。")
     wk = "一二三四五六日"
-    out = [f"{s:%Y-%m-%d} 起 {days} 天，工作時段 {day_start}–{day_end}，"
+    who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
+    out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
            f"≥ {duration_minutes} 分鐘的空檔："]
+    if others_note:
+        out.append(others_note)
     cur = None
     for a, b in slots:
         if a.date() != cur:
@@ -654,7 +738,62 @@ def _register_calendar_app(server: "FastMCP") -> None:
             return f.read()
 
 
-TOOLS = (list_calendars, search_events, find_free_slots, find_person)
+def _register_prompts(server: "FastMCP") -> None:
+    """Prompts＝客戶端可直接點選的工作流程範本。價值在把「正確的工具
+    使用順序」固化，比散在各工具 docstring 的提示更能引導模型。"""
+
+    @server.prompt(name="weekly-review", title="本週行程總覽",
+                   description="總結未來一週行程：每日重點、時間衝突、尚未回覆的邀請")
+    def weekly_review() -> str:
+        return ("請幫我總結未來一週的行程：\n"
+                "1. 用 agenda(days=7) 取得行程\n"
+                "2. 用 list_invitations() 找出我尚未回覆的會議邀請\n"
+                "3. 整理成：每天的重點會議、時間重疊的衝突清單、待回覆清單\n"
+                "衝突與待回覆放最前面，我需要先處理它們。")
+
+    @server.prompt(name="schedule-meeting", title="安排會議",
+                   description="找人、找共同空檔、建立會議的引導流程")
+    def schedule_meeting(attendees: str, duration_minutes: str = "60",
+                         topic: str = "") -> str:
+        return (f"請幫我安排會議「{topic or '（主題待定）'}」，"
+                f"與會者：{attendees}，長度 {duration_minutes} 分鐘。步驟：\n"
+                "1. 與會者若是人名不是 email，先用 find_person 查出 email，"
+                "有多個候選時列出來問我\n"
+                "2. 用 find_free_slots(attendees=[...]) 找大家共同的空檔；"
+                "若伺服器不支援查他人，就先查我的空檔並提醒我人工確認對方時間\n"
+                "3. 列 2–3 個候選時段給我選\n"
+                "4. 我確認後才用 book(...) 建立；要寄邀請信需我明確同意才帶 notify=true")
+
+    @server.prompt(name="reschedule", title="會議改期",
+                   description="把某個會議改到新時段：定位會議、找空檔、更新")
+    def reschedule(event_keyword: str, preference: str = "") -> str:
+        return (f"請幫我把會議「{event_keyword}」改期"
+                + (f"（偏好：{preference}）" if preference else "") + "。步驟：\n"
+                "1. 用 search_events 找到這個會議，確認 uid；多筆符合時列出來問我\n"
+                "2. 用 get_event(uid) 看與會者與細節\n"
+                "3. 用 find_free_slots 找新時段（有與會者就帶 attendees 一起查）\n"
+                "4. 列候選時段給我選，確認後用 update_event 改時間；"
+                "重複會議先問我是改整個系列還是只改某一次（occurrence）")
+
+    @server.prompt(name="morning-brief", title="今日行程簡報",
+                   description="今天的行程摘要：會議清單、第一場會議細節、待回覆邀請")
+    def morning_brief() -> str:
+        return ("請給我今天的行程簡報：\n"
+                "1. agenda(days=1) 看今天所有行程\n"
+                "2. 對第一場會議用 get_event(uid) 取完整細節（地點/連結/與會者）\n"
+                "3. list_invitations(days=3) 看有沒有需要回覆的新邀請\n"
+                "簡潔條列就好，先講最近的一場。")
+
+    @server.resource("m2k://whoami", name="whoami",
+                     description="目前登入者的 email（book 的 organizer 身分）")
+    def whoami() -> str:
+        # 不走 creds()：缺密碼時它會互動式詢問，會卡死 stdio server
+        return (os.environ.get("M2K_USER", "").strip()
+                or "（HTTP/OAuth 模式：身分依每請求憑證而定）")
+
+
+TOOLS = (list_calendars, search_events, find_free_slots, find_person,
+         get_event, list_invitations)
 # 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
 # （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）
 APP_TOOLS = (agenda, list_events, book, update_event, respond_event, delete_event)
@@ -701,6 +840,7 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
     for f in APP_TOOLS:
         server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}})(f)
     _register_calendar_app(server)
+    _register_prompts(server)
     if host:
         server.settings.host = host
     if port:

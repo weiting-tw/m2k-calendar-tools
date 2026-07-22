@@ -370,6 +370,51 @@ def render_grouped(events):
     return "\n".join(out) if out else "（無事件）"
 
 
+_PS_ZH = {"ACCEPTED": "✓ 已接受", "DECLINED": "✗ 已拒絕",
+          "TENTATIVE": "? 暫定", "NEEDS-ACTION": "· 未回覆"}
+
+
+def render_detail(ev):
+    """單一事件完整詳情：描述不截斷、逐位與會者列回覆狀態（PARTSTAT）、
+    重複規則與提醒。render_grouped 是清單摘要，這裡是 get_event 用的全文。"""
+    rows = _event_rows([ev])
+    if not rows:
+        return "（讀不到事件內容）"
+    r = rows[0]
+    out = [f"標題: {r['summary']}"]
+    if r["allday"]:
+        e = r["end"] - dt.timedelta(days=1) if r["end"] else r["start"]  # DTEND 排他
+        span = f" ~ {e:%Y-%m-%d}" if e and e.date() != r["start"].date() else ""
+        out.append(f"時間: {r['start']:%Y-%m-%d}{span}（全天）")
+    else:
+        out.append(f"時間: {r['start']:%Y-%m-%d %H:%M} → "
+                   + (f"{r['end']:%Y-%m-%d %H:%M}" if r["end"] else "?"))
+    if r["rrule"]:
+        out.append(f"重複: {r['rrule']}")
+    if r["loc"]:
+        out.append(f"地點: {r['loc']}")
+    if r["organizer"]:
+        out.append(f"召集人: {r['organizer']}")
+    if r["atts"]:
+        out.append(f"與會者（{len(r['atts'])} 人）:")
+        for nm, em, ps in r["atts"]:
+            who = f"{nm} <{em}>" if nm and nm != em else em
+            out.append(f"  {_PS_ZH.get((ps or '').upper(), '· 未回覆')}  {who}")
+    try:
+        for al in ev.icalendar_component.walk("VALARM"):
+            trig = al.get("TRIGGER")
+            mins = int(-trig.dt.total_seconds() // 60)
+            out.append(f"提醒: 開始前 {mins} 分鐘")
+    except Exception:
+        pass
+    if r["desc"]:
+        out.append("描述:\n" + r["desc"].strip())
+    if r["url"]:
+        out.append(f"連結: {r['url']}")
+    out.append(f"id: {r['uid']}")
+    return "\n".join(out)
+
+
 def render_board_html(events, title):
     """產生看板樣式 HTML：每天一欄、事件為卡片。"""
     from collections import OrderedDict
@@ -559,12 +604,24 @@ def _fold(line):
 
 
 def build_ics(title, start, end, location="", desc="", attendees=None,
-              organizer="", uid=None, stamp=None, rrule="", reminder_minutes=0):
+              organizer="", uid=None, stamp=None, rrule="", reminder_minutes=0,
+              all_day=False):
     """組出 iCalendar 字串，格式對齊 Mail2000（帶 VTIMEZONE + TZID，
     Mail2000/SabreDAV 後端不吃純 UTC/浮動時間，會回 500）。純函式，方便測試。
-    rrule：RRULE 內容（如 'FREQ=WEEKLY;UNTIL=...'）；reminder_minutes：開始前 N 分鐘 VALARM。"""
+    rrule：RRULE 內容（如 'FREQ=WEEKLY;UNTIL=...'）；reminder_minutes：開始前 N 分鐘 VALARM；
+    all_day：全天事件（VALUE=DATE；DTEND 依規範為排他日期，end 落在同日或更早時自動補隔天）。"""
     uid = _line_safe(uid or str(uuid.uuid4()))
     stamp = stamp or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if all_day:
+        sd = start.date() if isinstance(start, dt.datetime) else start
+        ed = end.date() if isinstance(end, dt.datetime) else end
+        if ed <= sd:
+            ed = sd + dt.timedelta(days=1)
+        dt_lines = [f"DTSTART;VALUE=DATE:{sd:%Y%m%d}",
+                    f"DTEND;VALUE=DATE:{ed:%Y%m%d}"]
+    else:
+        dt_lines = [f"DTSTART;TZID={TZID}:{_local_wall(start)}",
+                    f"DTEND;TZID={TZID}:{_local_wall(end)}"]
     lines = [
         "BEGIN:VCALENDAR",
         "PRODID:-//m2kcal//CalDAV CLI//EN",
@@ -584,8 +641,7 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
         f"CREATED:{stamp}",
         f"LAST-MODIFIED:{stamp}",
         "SEQUENCE:0",
-        f"DTSTART;TZID={TZID}:{_local_wall(start)}",
-        f"DTEND;TZID={TZID}:{_local_wall(end)}",
+        *dt_lines,
         f"SUMMARY:{_ical_escape(title)}",
     ]
     if rrule:
@@ -608,6 +664,45 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
                   "ACTION:DISPLAY", f"DESCRIPTION:{_ical_escape(title)}", "END:VALARM"]
     lines += ["END:VEVENT", "END:VCALENDAR"]
     return "\r\n".join(fl for ln in lines for fl in _fold(ln)) + "\r\n"
+
+
+_BYDAY_TOKEN = re.compile(r"^(-?[1-4])?(MO|TU|WE|TH|FR|SA|SU)$")
+
+
+def compose_rrule(repeat, until=None, byday=None, interval=0):
+    """組 RRULE 字串並驗證輸入（book / update 共用）。
+    repeat：daily / weekly / monthly；until：datetime（含當日結束）；
+    byday：['TU','TH']（weekly）或 ['3FR']（monthly 第 3 個週五，可帶 -1 表最後一個）；
+    interval：每 N 個頻率單位（0/1＝每次）。輸入不合法丟 M2KError。"""
+    freq = {"daily": "DAILY", "weekly": "WEEKLY",
+            "monthly": "MONTHLY"}.get((repeat or "").strip().lower())
+    if not freq:
+        raise M2KError("repeat 需為 daily / weekly / monthly。")
+    parts = [f"FREQ={freq}"]
+    try:
+        iv = int(interval or 0)
+    except (TypeError, ValueError):
+        raise M2KError(f"interval 需為整數: {interval}")
+    if iv < 0:
+        raise M2KError("interval 不可為負數。")
+    if iv > 1:
+        parts.append(f"INTERVAL={iv}")
+    days = []
+    for d in (byday or []):
+        tok = str(d).strip().upper()
+        if not _BYDAY_TOKEN.match(tok):
+            raise M2KError(f"byday 看不懂: {d}"
+                           "（用 MO/TU/WE/TH/FR/SA/SU；monthly 可加序數如 3FR、-1MO）")
+        days.append(tok)
+    if days:
+        if freq == "DAILY":
+            raise M2KError("byday 只能搭配 weekly / monthly。")
+        if freq == "WEEKLY" and any(len(t) > 2 for t in days):
+            raise M2KError("weekly 的 byday 不能帶序數（序數如 3FR 是 monthly 用法）。")
+        parts.append("BYDAY=" + ",".join(days))
+    if until:
+        parts.append("UNTIL=" + _zulu(until))
+    return ";".join(parts)
 
 
 # ---------- 聯絡人（從行事曆歷史萃取，供模糊人名查 email） ----------
@@ -714,6 +809,80 @@ def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
     finally:
         try:
             M.logout()
+        except Exception:
+            pass
+    return out
+
+
+def parse_invitation_bytes(raw):
+    """純函式：從一封信的原始 bytes 抽出 iMIP 邀請摘要，非 REQUEST 邀請回 None。
+    回 {"uid","summary","start","organizer","subject"}，供 list_invitations 用。"""
+    import email as _email
+    from email.header import decode_header, make_header
+    msg = _email.message_from_bytes(raw)
+    for part in msg.walk():
+        if part.get_content_type() != "text/calendar":
+            continue
+        try:
+            ics = part.get_payload(decode=True).decode(
+                part.get_content_charset() or "utf-8", "replace")
+        except Exception:
+            continue
+        unfolded = ics.replace("\r\n ", "").replace("\n ", "")
+        m = re.search(r"^METHOD:(\S+)", unfolded, re.M)
+        if not m or m.group(1).strip().upper() != "REQUEST":
+            return None  # 回覆/取消等其他 iMIP 不算「待處理邀請」
+        info = parse_ics(ics)
+        um = re.search(r"^UID:(.+?)\r?$", unfolded, re.M)
+        om = re.search(r"^ORGANIZER[^:\r\n]*:(?:mailto:)?(\S+)", unfolded, re.M | re.I)
+        try:
+            subject = str(make_header(decode_header(msg.get("Subject", ""))))
+        except Exception:
+            subject = msg.get("Subject", "")
+        return {"uid": um.group(1).strip() if um else "",
+                "summary": info.get("SUMMARY", ""),
+                "start": info.get("start", ""),
+                "organizer": om.group(1).strip() if om else "",
+                "subject": subject}
+    return None
+
+
+def imap_recent_invitations(user, pwd, host=None, days=14, per_folder=300):
+    """掃 INBOX 最近 days 天的信，抽出 iMIP 會議邀請（METHOD:REQUEST）。
+    先用 BODYSTRUCTURE 篩出帶 text/calendar 部件的信（不抓內文，省流量），
+    只對候選信抓全文解析。回傳 parse_invitation_bytes 結果清單（新→舊）。"""
+    import imaplib
+    box = imaplib.IMAP4_SSL(host or os.environ.get("M2K_IMAP_HOST", DEFAULT_IMAP_HOST),
+                            timeout=30)
+    out = []
+    try:
+        box.login(user, pwd)
+        box.select("INBOX", readonly=True)
+        since = (dt.date.today() - dt.timedelta(days=days)).strftime("%d-%b-%Y")
+        typ, data = box.search(None, "SINCE", since)
+        ids = (data[0] or b"").split()[-per_folder:]
+        cand = []
+        if ids:
+            typ, bs = box.fetch(b",".join(ids), "(BODYSTRUCTURE)")
+            for item in bs or []:
+                blob = item if isinstance(item, bytes) else b"".join(
+                    p for p in item if isinstance(p, bytes))
+                m = re.match(rb"(\d+) ", blob)
+                if m and b"calendar" in blob.lower():
+                    cand.append(m.group(1))
+        for mid in reversed(cand):
+            typ, msg_data = box.fetch(mid, "(BODY.PEEK[])")
+            raw = next((p[1] for p in msg_data if isinstance(p, tuple)), None)
+            if not raw:
+                continue
+            inv = parse_invitation_bytes(raw)
+            if inv:
+                out.append(inv)
+    except Exception as e:
+        raise M2KError(f"IMAP 讀取邀請失敗: {e}")
+    finally:
+        try:
+            box.logout()
         except Exception:
             pass
     return out
@@ -837,6 +1006,63 @@ def free_slots(busy, start, end, duration_min=60,
             if (e0 - s0).total_seconds() >= duration_min * 60]
 
 
+def freebusy_others(auth, principal, emails, s, e):
+    """RFC 6638 排程 free-busy：POST VFREEBUSY 到自己的 schedule-outbox，
+    查多位使用者的忙碌時段。回 {email: [(start,end)…台北 naive]}。
+    Mail2000 舊站台可能整個不支援（schedule-outbox 404）——失敗丟 M2KError，
+    呼叫端據此回報「此伺服器不支援查他人空檔」。"""
+    import requests
+    from xml.etree import ElementTree as ET
+    url, user, pwd = auth
+    # 1) PROPFIND principal 找 schedule-outbox-URL
+    body = ('<?xml version="1.0"?><propfind xmlns="DAV:">'
+            '<prop><outbox xmlns="urn:ietf:params:xml:ns:caldav" '
+            'xmlns:c="urn:ietf:params:xml:ns:caldav"/>'
+            '<c:schedule-outbox-URL xmlns:c="urn:ietf:params:xml:ns:caldav"/>'
+            '</prop></propfind>')
+    r = requests.request("PROPFIND", str(principal.url), data=body.encode(),
+                         headers={"Depth": "0", "Content-Type": "application/xml"},
+                         auth=(user, pwd), timeout=30)
+    m = re.search(r"<[^>]*schedule-outbox-URL[^>]*>\s*<[^>]*href[^>]*>([^<]+)<",
+                  r.text or "", re.I)
+    if r.status_code >= 400 or not m:
+        raise M2KError(f"此伺服器不支援排程 free-busy（找不到 schedule-outbox，"
+                       f"PROPFIND HTTP {r.status_code}）。")
+    from urllib.parse import urljoin
+    outbox = urljoin(str(principal.url), m.group(1).strip())
+    # 2) POST VFREEBUSY（iTIP REQUEST）
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    att_lines = "".join(f"ATTENDEE:mailto:{_line_safe(a)}\r\n" for a in emails)
+    vfb = ("BEGIN:VCALENDAR\r\nPRODID:-//m2kcal//CalDAV CLI//EN\r\nVERSION:2.0\r\n"
+           "METHOD:REQUEST\r\nBEGIN:VFREEBUSY\r\n"
+           f"UID:{uuid.uuid4()}\r\nDTSTAMP:{stamp}\r\n"
+           f"DTSTART:{_zulu(s)}\r\nDTEND:{_zulu(e)}\r\n"
+           f"ORGANIZER:mailto:{_line_safe(user)}\r\n{att_lines}"
+           "END:VFREEBUSY\r\nEND:VCALENDAR\r\n")
+    r2 = requests.post(outbox, data=vfb.encode("utf-8"),
+                       headers={"Content-Type": "text/calendar; charset=utf-8"},
+                       auth=(user, pwd), timeout=30)
+    if r2.status_code >= 400:
+        raise M2KError(f"此伺服器不支援排程 free-busy（outbox POST HTTP {r2.status_code}）。")
+    # 3) 解析 schedule-response：每個 response 一位 attendee 的 VFREEBUSY
+    out = {}
+    try:
+        root = ET.fromstring(r2.text)
+    except ET.ParseError:
+        raise M2KError("排程 free-busy 回應不是合法 XML，無法解析。")
+    ns = {"C": "urn:ietf:params:xml:ns:caldav"}
+    for resp in root.findall(".//C:response", ns):
+        rcpt = resp.find(".//C:recipient", ns)
+        cdata = resp.find(".//C:calendar-data", ns)
+        email = re.sub(r"^mailto:", "", "".join(rcpt.itertext()).strip(),
+                       flags=re.I) if rcpt is not None else ""
+        if email and cdata is not None and cdata.text:
+            out[email.lower()] = parse_freebusy(cdata.text)
+    if not out:
+        raise M2KError("排程 free-busy 回應裡沒有任何與會者資料。")
+    return out
+
+
 def _mk_attendee(email):
     from icalendar.prop import vCalAddress, vText
     a = vCalAddress("mailto:" + email)
@@ -948,10 +1174,11 @@ def _ensure_vtimezone(ical):
 
 def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
                      desc=None, add_attendees=None, remove_attendees=None,
-                     respond=None, rrule=None):
+                     respond=None, rrule=None, reminder=None):
     """純函式：讀入既有事件的 ICS，套用指定變更後回傳新 ICS 文字（None＝不變）。
     respond=(email, PARTSTAT)：把該與會者的出席狀態改為 ACCEPTED/DECLINED/TENTATIVE。
     rrule：None＝不變；""＝移除重複規則；'FREQ=…'＝改寫重複規則。
+    reminder：None＝不變；0＝移除所有提醒；N＝改為開始前 N 分鐘 DISPLAY 提醒。
     只動有給的欄位，其餘屬性（VALARM、X-…）原樣保留；
     SEQUENCE +1、更新 DTSTAMP/LAST-MODIFIED。"""
     ical, ev = _parse_event_ics(ics_text)
@@ -962,6 +1189,19 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
         ev.pop("RRULE", None)
         if rrule:
             ev.add("RRULE", vRecur.from_ical(rrule))
+    if reminder is not None:
+        mins = int(reminder)
+        if mins < 0:
+            raise M2KError("reminder_minutes 不可為負數（0＝移除提醒）。")
+        for al in [c for c in ev.subcomponents if getattr(c, "name", "") == "VALARM"]:
+            ev.subcomponents.remove(al)
+        if mins > 0:
+            from icalendar import Alarm
+            al = Alarm()
+            al.add("ACTION", "DISPLAY")
+            al.add("DESCRIPTION", str(ev.get("SUMMARY", "提醒")))
+            al.add("TRIGGER", dt.timedelta(minutes=-mins))
+            ev.add_component(al)
     if start or end:
         _ensure_vtimezone(ical)
     _bump_and_stamp(ev)
