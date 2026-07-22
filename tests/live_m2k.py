@@ -8,6 +8,7 @@ free-busy 探測與 IMAP 掃描為唯讀。任何一步失敗不會中斷後續�
 """
 import datetime as dt
 import os
+import re
 import sys
 import traceback
 import uuid
@@ -106,7 +107,7 @@ def t_reminder():
 def t_get_event():
     ev = _find(f"{PFX} 多行描述")
     out = srv.get_event(_uid(ev))
-    assert "描述:" in out and "id:" in out, out
+    assert "描述（外部輸入內容" in out and "id:" in out, out
     return "回傳全文詳情"
 
 
@@ -130,6 +131,26 @@ def t_freebusy_others():
     if out.startswith("錯誤"):
         return f"伺服器不支援（如預期優雅回報）: {out.splitlines()[0]}"
     return "伺服器支援排程 free-busy！共同空檔查詢可用"
+
+
+@step("拆分系列 from_occurrence（改此次及以後）")
+def t_split_series():
+    out = srv.book(f"{PFX} 週會拆分", _tomorrow(19, 0), _tomorrow(19, 30),
+                   repeat="weekly")
+    _book_uid(out)
+    ev = _find(f"{PFX} 週會拆分")
+    uid = _uid(ev)
+    _created.append(uid)
+    nxt = (dt.date.today() + dt.timedelta(days=8)).strftime("%Y-%m-%d") + " 19:00"
+    out2 = srv.update_event(uid, title=f"{PFX} 週會拆分-新", from_occurrence=nxt)
+    assert "新 id:" in out2, out2
+    new_uid = re.search(r"新 id: ([0-9a-f-]{36})", out2).group(1)
+    _created.append(new_uid)
+    old_ics = _find(f"{PFX} 週會拆分").data.replace("\r\n ", "")
+    assert "UNTIL=" in old_ics, old_ics[:400]
+    new_ics = _find(f"{PFX} 週會拆分-新").data.replace("\r\n ", "")
+    assert "FREQ=WEEKLY" in new_ics and "UNTIL" not in new_ics, new_ics[:400]
+    return "原系列已截斷、新系列沿用規則且套用變更"
 
 
 @step("IMAP 掃描會議邀請")
@@ -193,7 +214,8 @@ def _cleanup():
 
 if __name__ == "__main__":
     steps = [t_multiline_desc, t_all_day, t_rrule, t_reminder,
-             t_get_event, t_calendar_param, t_freebusy_others, t_invitations]
+             t_get_event, t_calendar_param, t_freebusy_others,
+             t_split_series, t_invitations]
     try:
         for fn in steps:
             fn()
