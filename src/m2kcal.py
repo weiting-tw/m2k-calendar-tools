@@ -173,15 +173,36 @@ def _fmt_dt_line(line):
     return d.strftime("%Y-%m-%d %H:%M")
 
 
+def _ical_unescape(text):
+    """RFC 5545 TEXT 反跳脫（\\n → 換行、\\, \\; \\\\ → 原字元），
+    與 _ical_escape 成對；不做的話回報給使用者的標題會帶字面 \\,。"""
+    out, i = [], 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            n = text[i + 1]
+            if n in "nN":
+                out.append("\n")
+                i += 2
+                continue
+            if n in "\\,;":
+                out.append(n)
+                i += 2
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def parse_ics(text):
     """從 ICS 抽出 SUMMARY / 時間 / 地點 / 與會者（驗證用）。"""
     text = text.replace("\r\n ", "").replace("\n ", "")  # unfold
     out = {"attendees": []}
     for line in text.splitlines():
         if line.startswith("SUMMARY:"):
-            out["SUMMARY"] = line[8:].strip()
+            out["SUMMARY"] = _ical_unescape(line[8:].strip())
         elif line.startswith("LOCATION:"):
-            out["location"] = line[9:].strip()
+            out["location"] = _ical_unescape(line[9:].strip())
         elif line.startswith("DTSTART"):
             out["start"] = _fmt_dt_line(line)
         elif line.startswith("DTEND"):
@@ -509,12 +530,40 @@ def _local_wall(t):
     return t.strftime("%Y%m%dT%H%M%S")
 
 
+def _ical_escape(text):
+    """RFC 5545 3.3.11 TEXT 跳脫：反斜線、分號、逗號、換行（→ 字面 \\n）。
+    直接塞原始 \\n 會讓 Mail2000/SabreDAV 解析失敗回 415。"""
+    return (str(text).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+            .replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n"))
+
+
+def _line_safe(text):
+    """非 TEXT 值（CAL-ADDRESS、UID、RRULE 等）不能用反斜線跳脫，
+    直接剔除 CR/LF 防止換行注入弄壞 iCal 結構。"""
+    return str(text).replace("\r", "").replace("\n", "")
+
+
+def _fold(line):
+    """RFC 5545 3.1 折行：實體行超過 75 octets 以 CRLF+空格續行。
+    以 UTF-8 位元組計，且不能切在多位元組字元中間。"""
+    raw = line.encode("utf-8")
+    out = []
+    while len(raw) > 75:
+        cut = 75
+        while (raw[cut] & 0xC0) == 0x80:  # 避開 UTF-8 續位元組
+            cut -= 1
+        out.append(raw[:cut].decode("utf-8"))
+        raw = b" " + raw[cut:]
+    out.append(raw.decode("utf-8"))
+    return out
+
+
 def build_ics(title, start, end, location="", desc="", attendees=None,
               organizer="", uid=None, stamp=None, rrule="", reminder_minutes=0):
     """組出 iCalendar 字串，格式對齊 Mail2000（帶 VTIMEZONE + TZID，
     Mail2000/SabreDAV 後端不吃純 UTC/浮動時間，會回 500）。純函式，方便測試。
     rrule：RRULE 內容（如 'FREQ=WEEKLY;UNTIL=...'）；reminder_minutes：開始前 N 分鐘 VALARM。"""
-    uid = uid or str(uuid.uuid4())
+    uid = _line_safe(uid or str(uuid.uuid4()))
     stamp = stamp or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     lines = [
         "BEGIN:VCALENDAR",
@@ -537,28 +586,28 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
         "SEQUENCE:0",
         f"DTSTART;TZID={TZID}:{_local_wall(start)}",
         f"DTEND;TZID={TZID}:{_local_wall(end)}",
-        f"SUMMARY:{title}",
+        f"SUMMARY:{_ical_escape(title)}",
     ]
     if rrule:
-        lines.append(f"RRULE:{rrule}")
+        lines.append(f"RRULE:{_line_safe(rrule)}")
     if organizer:
-        lines.append(f"ORGANIZER:mailto:{organizer}")
+        lines.append(f"ORGANIZER:mailto:{_line_safe(organizer)}")
     if location:
-        lines.append(f"LOCATION:{location}")
+        lines.append(f"LOCATION:{_ical_escape(location)}")
     if desc:
-        lines.append(f"DESCRIPTION:{desc}")
+        lines.append(f"DESCRIPTION:{_ical_escape(desc)}")
     # 與會者：此站台 CalDAV 無排程 (schedule-outbox 404)，ATTENDEE 只記錄、不會自動寄邀請。
     if attendees:
         for a in attendees:
-            email = a.strip()
+            email = _line_safe(a).strip()
             lines.append(
                 f"ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{email}"
             )
     if reminder_minutes:
         lines += ["BEGIN:VALARM", f"TRIGGER:-PT{int(reminder_minutes)}M",
-                  "ACTION:DISPLAY", f"DESCRIPTION:{title}", "END:VALARM"]
+                  "ACTION:DISPLAY", f"DESCRIPTION:{_ical_escape(title)}", "END:VALARM"]
     lines += ["END:VEVENT", "END:VCALENDAR"]
-    return "\r\n".join(lines) + "\r\n"
+    return "\r\n".join(fl for ln in lines for fl in _fold(ln)) + "\r\n"
 
 
 # ---------- 聯絡人（從行事曆歷史萃取，供模糊人名查 email） ----------

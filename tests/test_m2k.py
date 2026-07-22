@@ -18,6 +18,11 @@ def check(name, cond):
     assert cond, name
 
 
+def unfold(s):
+    """RFC 5545 折行還原（收端視角），讓子字串檢查不被折行切斷。"""
+    return s.replace("\r\n ", "")
+
+
 # 1) build_ics: 基本欄位（用帶時區時間，確保 UTC 轉換結果固定：+08:00 14:00 -> 06:00Z）
 TW = dt.timezone(dt.timedelta(hours=8))
 s = dt.datetime(2026, 7, 10, 14, 0, tzinfo=TW)
@@ -36,10 +41,51 @@ check("ICS 有頭尾", ics.startswith("BEGIN:VCALENDAR") and ics.rstrip().endswi
 ics2 = m2kcal.build_ics("部門會議", s, e,
                         attendees=["user_a@example.com", "user_b@example.com"],
                         organizer="owner@example.com", uid="U2", stamp="Z")
-check("與會者1寫入", "ATTENDEE" in ics2 and "user_a@example.com" in ics2)
-check("與會者2寫入", "user_b@example.com" in ics2)
-check("ORGANIZER 寫入", "ORGANIZER:mailto:owner@example.com" in ics2)
-check("與會者數=2", ics2.count("ATTENDEE") == 2)
+check("與會者1寫入", "ATTENDEE" in ics2 and "user_a@example.com" in unfold(ics2))
+check("與會者2寫入", "user_b@example.com" in unfold(ics2))
+check("ORGANIZER 寫入", "ORGANIZER:mailto:owner@example.com" in unfold(ics2))
+check("與會者數=2", unfold(ics2).count("ATTENDEE") == 2)
+
+# 2b) build_ics: TEXT 跳脫與折行（RFC 5545）——描述帶原始換行曾讓 CalDAV 回 415
+esc = m2kcal.build_ics("標題,含;符號", s, e, desc="第一行\n第二行", uid="U2b", stamp="Z")
+check("描述換行跳脫為字面 \\n", "DESCRIPTION:第一行\\n第二行" in unfold(esc))
+check("SUMMARY 逗號分號跳脫", "SUMMARY:標題\\,含\\;符號" in unfold(esc))
+check("值中無原始換行殘留",
+      all(l.startswith(("BEGIN", "END", "PRODID", "VERSION", "CALSCALE", "TZ",
+                        "UID", "DT", "CREATED", "LAST", "SEQUENCE", "SUMMARY",
+                        "DESCRIPTION")) or l.startswith(" ")
+          for l in esc.split("\r\n") if l))
+fold_ics = m2kcal.build_ics("長" * 100, s, e, desc="說" * 100, uid="U2c", stamp="Z")
+check("每實體行 ≤75 octets", all(len(l.encode("utf-8")) <= 75
+                                for l in fold_ics.split("\r\n")))
+check("折行可無損還原（多位元組不被切壞）",
+      "SUMMARY:" + "長" * 100 in unfold(fold_ics)
+      and "DESCRIPTION:" + "說" * 100 in unfold(fold_ics))
+
+# 2c) parse_ics 反跳脫：book/update 回報都靠 parse_ics 讀回，需還原原文
+rt = m2kcal.build_ics("回,報;測試", s, e, location="B1,大廳", uid="U2d", stamp="Z")
+rt_info = m2kcal.parse_ics(rt)
+check("parse_ics SUMMARY 反跳脫", rt_info.get("SUMMARY") == "回,報;測試")
+check("parse_ics LOCATION 反跳脫", rt_info.get("location") == "B1,大廳")
+check("字面反斜線 round-trip",
+      m2kcal.parse_ics(m2kcal.build_ics(r"字面\n非換行", s, e, uid="U2d2",
+                                        stamp="Z")).get("SUMMARY") == r"字面\n非換行")
+check("懸空反斜線不炸", m2kcal.parse_ics("SUMMARY:壞\\").get("SUMMARY") == "壞\\")
+
+# 2d) 非 TEXT 欄位（CAL-ADDRESS/UID/RRULE）換行注入防護——不能跳脫，直接剔除
+inj = m2kcal.build_ics("t", s, e, attendees=["a@b.c\r\nX-EVIL:1"],
+                       organizer="o@b.c\nX-EVIL:2", uid="U\n2e",
+                       rrule="FREQ=DAILY\nX-EVIL:3", stamp="Z")
+check("換行注入不產生新屬性行",
+      all(not l.startswith("X-EVIL") for l in inj.split("\r\n")))
+check("注入後 UID 仍在同一行", "UID:U2e" in inj)
+
+# 2e) 折行臨界點：75 octets（含屬性名）不折、76 折
+b75 = m2kcal.build_ics("A" * 67, s, e, uid="U2f", stamp="Z")  # SUMMARY: + 67 = 75
+check("剛好 75 octets 不折行", "SUMMARY:" + "A" * 67 in b75.split("\r\n"))
+b76 = m2kcal.build_ics("A" * 68, s, e, uid="U2g", stamp="Z")
+check("76 octets 折行（首段 75＋續行）",
+      "SUMMARY:" + "A" * 67 in b76.split("\r\n") and " A" in b76.split("\r\n"))
 
 # 3) parse_when: 多種格式；壞格式丟 M2KError（不能 sys.exit，否則會殺掉 MCP server）
 check("解析 日期時間", m2kcal.parse_when("2026-07-10 14:00") == dt.datetime(2026, 7, 10, 14, 0))
