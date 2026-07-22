@@ -350,4 +350,95 @@ check("render_grouped URL 抽出（含截斷後段）",
 check("render_grouped 無描述不印欄位",
       "描述:" not in m2kcal.render_grouped([_fake(timed)]))
 
+# 13) build_ics 全天事件（VALUE=DATE，DTEND 排他）
+ad = m2kcal.build_ics("休假", dt.datetime(2026, 7, 24), dt.datetime(2026, 7, 25),
+                      uid="AD1", stamp="Z", all_day=True)
+check("全天 DTSTART VALUE=DATE", "DTSTART;VALUE=DATE:20260724" in ad)
+check("全天 DTEND 排他日期", "DTEND;VALUE=DATE:20260725" in ad)
+ad2 = m2kcal.build_ics("單日", dt.datetime(2026, 7, 24), dt.datetime(2026, 7, 24),
+                       uid="AD2", stamp="Z", all_day=True)
+check("全天 end<=start 自動補隔天", "DTEND;VALUE=DATE:20260725" in ad2)
+check("全天事件可讀回", m2kcal.events_json([_fake(ad)])[0]["allday"])
+
+# 14) compose_rrule：組字與輸入驗證
+check("rrule weekly byday（大小寫寬容）",
+      m2kcal.compose_rrule("weekly", byday=["TU", "th"]) == "FREQ=WEEKLY;BYDAY=TU,TH")
+check("rrule interval", m2kcal.compose_rrule("weekly", interval=2)
+      == "FREQ=WEEKLY;INTERVAL=2")
+check("rrule interval=1 省略", m2kcal.compose_rrule("daily", interval=1) == "FREQ=DAILY")
+check("rrule monthly 序數", m2kcal.compose_rrule("monthly", byday=["3FR"])
+      == "FREQ=MONTHLY;BYDAY=3FR")
+check("rrule until 轉 UTC", m2kcal.compose_rrule(
+    "daily", until=dt.datetime(2026, 12, 31, 23, 59, 59, tzinfo=TW))
+    == "FREQ=DAILY;UNTIL=20261231T155959Z")
+for desc_, bad in [("hourly 不支援", lambda: m2kcal.compose_rrule("hourly")),
+                   ("daily+byday", lambda: m2kcal.compose_rrule("daily", byday=["MO"])),
+                   ("weekly+序數", lambda: m2kcal.compose_rrule("weekly", byday=["3FR"])),
+                   ("byday 亂字", lambda: m2kcal.compose_rrule("weekly", byday=["XX"])),
+                   ("interval 負數", lambda: m2kcal.compose_rrule("weekly", interval=-1))]:
+    try:
+        bad()
+        _r = False
+    except m2kcal.M2KError:
+        _r = True
+    check(f"rrule 壞輸入丟 M2KError（{desc_}）", _r)
+
+# 15) update_event_ics 提醒增/改/刪/保留
+rbase = m2kcal.build_ics("提醒測試", s, e, uid="R1", stamp="Z")
+w30 = m2kcal.update_event_ics(rbase, reminder=30)
+check("加提醒 VALARM -PT30M", "BEGIN:VALARM" in w30 and "-PT30M" in w30)
+w10 = m2kcal.update_event_ics(w30, reminder=10)
+check("改提醒不疊加", w10.count("BEGIN:VALARM") == 1 and "-PT10M" in w10)
+w0 = m2kcal.update_event_ics(w10, reminder=0)
+check("reminder=0 移除提醒", "VALARM" not in w0)
+wkeep = m2kcal.update_event_ics(w30, title="改名")
+check("reminder=None 保留既有提醒", wkeep.count("BEGIN:VALARM") == 1)
+try:
+    m2kcal.update_event_ics(rbase, reminder=-5)
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("reminder 負數丟 M2KError", _r)
+
+# 16) render_detail：描述全文、與會者回覆狀態、提醒、全天
+det_ics = m2kcal.build_ics("詳情會議", s, e, location="3F",
+                           desc="第一行\n第二行 " + "長" * 300,
+                           attendees=["a@x.com"], organizer="me@x.com",
+                           uid="D1", stamp="Z", reminder_minutes=15)
+det = m2kcal.render_detail(_fake(det_ics))
+check("render_detail 描述不截斷", "長" * 300 in det)
+check("render_detail 與會者回覆狀態", "未回覆" in det and "a@x.com" in det)
+check("render_detail 提醒", "開始前 15 分鐘" in det)
+check("render_detail id", "id: D1" in det)
+check("render_detail 全天標示", "（全天）" in m2kcal.render_detail(_fake(ad)))
+
+# 17) parse_invitation_bytes：iMIP 邀請信解析
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+
+def _mime_invite(method="REQUEST", uid="INV1"):
+    m = MIMEMultipart("mixed")
+    m["Subject"] = "邀請：部門週會"
+    m["From"] = "boss@gss.com.tw"
+    ics_body = "\r\n".join([
+        "BEGIN:VCALENDAR", f"METHOD:{method}", "BEGIN:VEVENT",
+        f"UID:{uid}", "SUMMARY:部門週會",
+        "ORGANIZER;CN=Boss:mailto:boss@gss.com.tw",
+        "DTSTART:20260727T020000Z", "END:VEVENT", "END:VCALENDAR"])
+    m.attach(MIMEText("請參加", "plain", "utf-8"))
+    m.attach(MIMEText(ics_body, f"calendar; method={method}", "utf-8"))
+    return m.as_bytes()
+
+
+inv = m2kcal.parse_invitation_bytes(_mime_invite())
+check("邀請信解析 uid", inv is not None and inv["uid"] == "INV1")
+check("邀請信解析 summary", inv["summary"] == "部門週會")
+check("邀請信解析 organizer", inv["organizer"] == "boss@gss.com.tw")
+check("邀請信 UTC→台北", inv["start"] == "2026-07-27 10:00")
+check("REPLY 不算待處理邀請",
+      m2kcal.parse_invitation_bytes(_mime_invite("REPLY")) is None)
+check("普通信回 None",
+      m2kcal.parse_invitation_bytes(MIMEText("hi").as_bytes()) is None)
+
 print("\n全部通過 ✅")
