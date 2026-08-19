@@ -1,4 +1,4 @@
-mcp[cli]>=1.28
+mcp[cli]>=1.28,<2
 caldav>=1.4
 icalendar>=6.0
 requests>=2.31
