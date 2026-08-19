@@ -2,8 +2,9 @@
 """
 m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議（走 CalDAV）。
 
-範圍：查詢自己的行事曆 + 建立會議（CalDAV，應用程式專用密碼）。
-      「看他人行事曆」需 webmail 登入 session（SAML），MCP 拿不到 → 用使用者腳本。
+範圍：查詢自己的行事曆 + 建立會議（CalDAV，應用程式專用密碼）；
+      同事若在 webmail 把行事曆分享給你，agenda/list_events 帶 person
+      參數即可查（走 CalDAV，不需 webmail session）。未分享的無法查。
 
 安裝：
   pip install "mcp[cli]" caldav icalendar requests
@@ -105,32 +106,44 @@ def list_calendars(ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-def agenda(days: int = 7, calendar: str = "", ctx: Context = None) -> str:
+def agenda(days: int = 7, person: str = "", calendar: str = "",
+           ctx: Context = None) -> str:
     """看未來 N 天的行程（依天分組）。days 預設 7。
-    calendar 指定行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
+    person：查同事分享給你的行事曆——模糊名字（如 'bear'）或完整 email 皆可，
+    留空＝查自己。對方需先在 webmail 把行事曆分享給你；多候選或未分享會回
+    提示訊息，不會亂猜。
+    calendar 指定自己的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
-        cal = _cal(_auth(ctx), calendar)
+        auth = _auth(ctx) or m2kcal.creds()
+        cal, prefix, err = _person_or_self(auth, person, calendar)
+        if err:
+            return err
         start = dt.datetime.now()
         end = start + dt.timedelta(days=days)
         events = cal.search(start=start, end=end, event=True, expand=True)
         # 帶今天日期＋星期當時間錨點：模型換算「下週三」這類相對時間才不會偏移
-        return (f"（今天 {start:%Y-%m-%d} 週{m2kcal._WK[start.weekday()]}）"
+        return (f"{prefix}（今天 {start:%Y-%m-%d} 週{m2kcal._WK[start.weekday()]}）"
                 f"未來 {days} 天，共 {len(events)} 筆:\n"
                 + m2kcal.render_grouped(events))
     except m2kcal.M2KError as e:
         return f"錯誤：{e}"
 
 
-def list_events(start: str, end: str, calendar: str = "",
+def list_events(start: str, end: str, person: str = "", calendar: str = "",
                 ctx: Context = None) -> str:
     """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。
-    calendar 指定行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
+    person：查同事分享給你的行事曆（模糊名字或完整 email），留空＝查自己；
+    對方需先在 webmail 把行事曆分享給你，多候選或未分享會回提示訊息。
+    calendar 指定自己的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
         s = m2kcal.parse_when(start)
         e = m2kcal.parse_when(end)
-        cal = _cal(_auth(ctx), calendar)
+        auth = _auth(ctx) or m2kcal.creds()
+        cal, prefix, err = _person_or_self(auth, person, calendar)
+        if err:
+            return err
         events = cal.search(start=s, end=e, event=True, expand=True)
-        return f"{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
+        return f"{prefix}{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
     except m2kcal.M2KError as e:
         return f"錯誤：{e}"
 
@@ -639,6 +652,54 @@ def find_person(names: list[str], ctx: Context = None) -> str:
         lines.append(f"「{n}」：" + ("" if len(rows) == 1 else f"（{len(rows)} 個候選，請確認）"))
         lines += rows
     return "\n".join(lines)
+
+
+def _resolve_person(auth, name):
+    """把（模糊的）名字解析成單一 email。回 (email, err)：email 有值＝唯一
+    命中或本就是完整 email；err 有值＝找不到／多候選（訊息可直接回使用者）。
+    來源同 find_person（公司通訊錄檔＋行事曆歷史＋信件往來），去重後判斷。"""
+    name = (name or "").strip()
+    if "@" in name:
+        return name.lower(), None
+    key = auth[1]
+    hit = _CONTACTS_CACHE.get(key)
+    if hit and time.time() - hit[0] < _CONTACTS_TTL:
+        contacts = hit[1]
+    else:
+        contacts = m2kcal.collect_contacts(_cal(auth))
+        _cache_put(_CONTACTS_CACHE, key, contacts)
+    merged = {}
+    for src in (_directory_contacts(), contacts, _mail_contacts(auth)):
+        for _s, email, rec in m2kcal.match_contacts(src, name):
+            merged.setdefault(email, rec.get("name") or email.split("@")[0])
+    if not merged:
+        return None, f"找不到「{name}」，請確認名字或改用完整 email。"
+    if len(merged) > 1:
+        lines = [f"「{name}」有多個候選，請改用完整 email 再查一次："]
+        lines += [f"  - {nm} <{em}>" for em, nm in list(merged.items())[:8]]
+        return None, "\n".join(lines)
+    return next(iter(merged)), None
+
+
+def _person_or_self(auth, person, calendar=""):
+    """回 (Calendar, 標題前綴, 錯誤字串)。person 空＝查自己（calendar 可選
+    自己的哪一本）；否則解析成同事 email 並指向其分享日曆。解析失敗／多候選／
+    未分享時 err 有值（可直接回使用者），cal 為 None。"""
+    person = (person or "").strip()
+    if not person:
+        return _cal(auth, calendar), "", None
+    email, err = _resolve_person(auth, person)
+    if err:
+        return None, "", err
+    cal = m2kcal.person_calendar(m2kcal.connect(auth), email)
+    try:  # 未分享／帳號不存在→404
+        cal.search(start=dt.datetime.now(),
+                   end=dt.datetime.now() + dt.timedelta(days=1),
+                   event=True, expand=True)
+    except m2kcal.caldav_error.NotFoundError:
+        return None, "", (f"找到 {email}，但讀不到對方行事曆"
+                          "（可能未分享給你，或帳號不存在）。")
+    return cal, f"【{email}】", None
 
 
 def delete_event(uid: str, occurrence: str = "", notify: bool = False,

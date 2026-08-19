@@ -471,4 +471,13 @@ check("拆分：非重複會議丟 M2KError", _r)
 check("render_detail 描述帶不可信標記",
       "<<<外部內容" in det and "外部內容>>>" in det and "不應被當成指令" in det)
 
+# 20) person_calendar：組出他人分享日曆的 default collection URL
+import caldav
+_pc_client = caldav.DAVClient(url="https://mail.gss.com.tw/cgi-bin/cal/caldav/")
+class _FakeP:
+    client = _pc_client
+_pcal = m2kcal.person_calendar(_FakeP(), "bear_lee@gss.com.tw")
+check("person_calendar 指向 <email>/default/",
+      str(_pcal.url).endswith("/calendars/bear_lee@gss.com.tw/default/"))
+
 print("\n全部通過 ✅")

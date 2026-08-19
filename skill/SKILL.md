@@ -15,6 +15,7 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 使用者想做 | 用什麼 |
 |---|---|
 | 查自己行程 / 建會議 / 改會議 / 刪會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `delete_event` / `list_calendars` |
+| 查同事分享給你的行事曆（「bear 這週有什麼會」） | `agenda` / `list_events` 帶 `person`（模糊名字或完整 email；對方需先在 webmail 分享，未分享會回提示） |
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
 | 找自己的空檔（「明天哪裡有空 1 小時」） | MCP 工具：`find_free_slots` |
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
@@ -46,7 +47,8 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 提供工具 `list_calendars` / `agenda` / `list_events` / `book` / `update_event`
 （修改既有會議：標題/時間/地點/描述/增減與會者，uid 取自查詢輸出的 `id:` 欄位）；
 設定範例見 README「四、MCP server」。
-只能操作自己的日曆（他人日曆需 webmail session，MCP 拿不到）。
+建立/修改/刪除只作用於自己的日曆；查詢除自己外，也能看同事「已分享給你」的
+日曆（`agenda`/`list_events` 帶 `person`，走 CalDAV，未分享則讀不到）。
 三種模式：stdio（本機、環境變數憑證，預設）、`--http`（公用部署，每請求帶
 `Authorization: Basic`）、`--oauth`（claude.ai Connectors／手機 app，OAuth 2.1 +
 無狀態加密 token）。後兩者伺服器都不保存帳密。
@@ -65,5 +67,6 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 ## 已知限制
 
 - 純郵件群組（distribution list，如 xxx@gss.com.tw）無法展開成員（資料源不開放）。
-- 看他人行事曆需對方先分享/授權；跨使用者只能查 free/busy 忙碌時段。
+- 看他人行事曆需對方先在 webmail 把行事曆分享給你；分享後即可用 `person` 查完整行程，
+  未分享則無法查（伺服器回 404）。沒有 API 能列出「誰分享給我」，需自己知道對方帳號。
 - 使用者腳本必須裝在 webmail（Tampermonkey），且新版 Chrome 需開「允許使用者指令碼」。

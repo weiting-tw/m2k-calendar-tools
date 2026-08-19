@@ -39,6 +39,7 @@ TW_TZ = dt.timezone(dt.timedelta(hours=8))  # Asia/Taipei
 
 try:
     import caldav
+    from caldav.lib import error as caldav_error
 except ImportError:
     sys.exit("需要 caldav 套件，請先執行:  pip install caldav icalendar")
 
@@ -131,6 +132,16 @@ def cal_name(c):
             return c.name
         except Exception:
             return str(c)
+
+
+def person_calendar(principal, email):
+    """回傳指向某位同事（已把行事曆分享給你）default 日曆的 Calendar 物件。
+    email 需完整帳號。CalDAV 的 principal.calendars() 只列自己 home 下的
+    日曆、分享來的不在清單，故直接以 URL 存取；未分享/不存在時後續
+    search 會丟 NotFoundError（404）。"""
+    base = os.environ.get("M2K_URL", DEFAULT_URL).rstrip("/")
+    return caldav.Calendar(client=principal.client,
+                           url=f"{base}/calendars/{email}/default/")
 
 
 def pick_calendar(principal, name=None):
@@ -539,23 +550,54 @@ def cmd_board(args):
             pass
 
 
+def _cli_calendar(args, p):
+    """CLI：依 --person 選日曆。回 (Calendar, 顯示標籤)。
+    --person 給模糊名字（fuzzy，來源為自己行事曆的往來對象）或完整 email；
+    無此參數則查自己。解析失敗/未分享時印訊息並結束。"""
+    person = (getattr(args, "person", "") or "").strip()
+    if not person:
+        cal = pick_calendar(p, args.calendar)
+        return cal, cal_name(cal)
+    if "@" in person:
+        email = person.lower()
+    else:
+        matches = match_contacts(collect_contacts(pick_calendar(p)), person)
+        if len(matches) != 1:
+            if matches:
+                print(f"「{person}」有多個候選，請改用完整 email：")
+                for _s, em, rec in matches[:8]:
+                    print(f"  - {rec['name'] or em.split('@')[0]} <{em}>")
+            else:
+                print(f"找不到「{person}」，請確認名字或改用完整 email。")
+            sys.exit(1)
+        email = matches[0][1]
+    cal = person_calendar(p, email)
+    try:  # 未分享→404
+        cal.search(start=dt.datetime.now(), end=dt.datetime.now() + dt.timedelta(days=1),
+                   event=True, expand=True)
+    except caldav_error.NotFoundError:
+        print(f"找到 {email}，但讀不到對方行事曆（可能未分享給你，或帳號不存在）。")
+        sys.exit(1)
+    return cal, email
+
+
 def cmd_list(args):
     p = connect()
-    cal = pick_calendar(p, args.calendar)
+    cal, label = _cli_calendar(args, p)
     start = parse_when(args.start)
     end = parse_when(args.end)
     events = cal.search(start=start, end=end, event=True, expand=True)
-    print(f"[{cal_name(cal)}] {args.start} ~ {args.end}，共 {len(events)} 筆:")
+    print(f"[{label}] {args.start} ~ {args.end}，共 {len(events)} 筆:")
     print(render_grouped(events))
 
 
 def cmd_agenda(args):
     p = connect()
-    cal = pick_calendar(p, args.calendar)
+    cal, label = _cli_calendar(args, p)
     start = dt.datetime.now()
     end = start + dt.timedelta(days=args.days)
     events = cal.search(start=start, end=end, event=True, expand=True)
-    print(f"[{cal_name(cal)}] 未來 {args.days} 天，共 {len(events)} 筆:")
+    print(f"[{label}] 未來 {args.days} 天，共 {len(events)} 筆:")
     print(render_grouped(events))
 
 
@@ -1482,6 +1524,7 @@ def main():
     pa = sub.add_parser("agenda", help="未來 N 天的會議")
     pa.add_argument("--days", type=int, default=7)
     pa.add_argument("--calendar")
+    pa.add_argument("--person", help="查同事分享給你的行事曆（模糊名字或完整 email）")
     pa.set_defaults(func=cmd_agenda)
 
     pbd = sub.add_parser("board", help="產生看板樣式 HTML（每天一欄）並開啟")
@@ -1504,6 +1547,7 @@ def main():
     pl.add_argument("--start", required=True)
     pl.add_argument("--end", required=True)
     pl.add_argument("--calendar")
+    pl.add_argument("--person", help="查同事分享給你的行事曆（模糊名字或完整 email）")
     pl.set_defaults(func=cmd_list)
 
     pb = sub.add_parser("book", help="建立 / 預約會議")
