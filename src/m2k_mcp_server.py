@@ -721,8 +721,10 @@ def find_group(name: str, ctx: Context = None) -> str:
     # 1) 公司通訊錄正式部門群組（CardDAV）
     try:
         dm = m2kcal.match_directory_groups(_dir_groups(auth), name)
-    except Exception:
-        dm = []  # CardDAV 讀不到（未開放/網路）就退回會議來源
+        dir_err = ""
+    except Exception as e:  # CardDAV 讀不到（未設 ADBID/權限/網路）就退回會議來源
+        dm = []
+        dir_err = f"{type(e).__name__}: {e}"
     if dm:
         lines = [f"「{name}」在公司通訊錄找到 {len(dm)} 個部門" +
                  ("（請確認要哪個再 book）：" if len(dm) > 1 else "：")]
@@ -746,11 +748,13 @@ def find_group(name: str, ctx: Context = None) -> str:
             _cache_put(_GROUPS_CACHE, key, groups)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
+    # 通訊錄查詢若是「出錯」而非「查無」，把原因附上供除錯（權限/未設定/網路）
+    dnote = f"（註：公司通訊錄查詢失敗 → {dir_err}）\n" if dir_err else ""
     matches = m2kcal.match_groups(groups, name)
     if not matches:
-        return (f"找不到叫「{name}」的部門或會議。公司通訊錄裡沒有相符部門，"
+        return (dnote + f"找不到叫「{name}」的部門或會議。公司通訊錄裡沒有相符部門，"
                 "你參與過的會議也沒有相符標題；請確認名稱，或用 find_person 逐一查人。")
-    lines = [f"「{name}」公司通訊錄無相符部門，改用你參與過的會議，找到 {len(matches)} 個" +
+    lines = [dnote + f"「{name}」公司通訊錄無相符部門，改用你參與過的會議，找到 {len(matches)} 個" +
              ("（請確認要用哪個、名單對不對再 book）：" if len(matches) > 1 else "：")]
     for r in matches[:5]:
         emails = r["attendees"]
