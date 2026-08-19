@@ -463,36 +463,74 @@ def _cal_ui_uri() -> str:
 CAL_UI_URI = _cal_ui_uri()
 
 
-def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx) -> dict[str, Any]:
+def _tag_owner(rows: list[dict], owner: str) -> list[dict]:
+    for r in rows:
+        r["owner"] = owner
+    return rows
+
+
+def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
+                      person: str = "") -> dict[str, Any]:
+    """組行事曆 UI 資料。person 給一個或多個（逗號分隔）同事名字/email，
+    會把「你自己 + 每位有分享的同事」的行程合併，每筆帶 owner 欄位供 UI
+    依人分色/篩選；解析失敗（多候選、未分享）收進 notes 於 UI 提示。"""
     auth = _auth(ctx) or m2kcal.creds()
-    cal = _cal(auth)
-    events = cal.search(start=s, end=e, event=True, expand=True)
+    me = auth[1]
+    owners = [{"email": me, "label": me.split("@")[0]}]
+    events = _tag_owner(
+        m2kcal.events_json(_cal(auth).search(start=s, end=e, event=True, expand=True)), me)
+    notes: list[str] = []
+    seen = {me.lower()}
+    for token in [t.strip() for t in (person or "").split(",") if t.strip()]:
+        email, err = _resolve_person(auth, token)
+        if err:
+            notes.append(err.splitlines()[0])
+            continue
+        if email.lower() in seen:
+            continue
+        try:
+            evs = m2kcal.person_calendar(m2kcal.connect(auth), email).search(
+                start=s, end=e, event=True, expand=True)
+        except m2kcal.caldav_error.NotFoundError:
+            notes.append(f"{email}：未分享行事曆給你，無法顯示")
+            continue
+        seen.add(email.lower())
+        owners.append({"email": email, "label": email.split("@")[0]})
+        events += _tag_owner(m2kcal.events_json(evs), email)
     return {
         "range": {"start": s.strftime("%Y-%m-%d"), "end": e.strftime("%Y-%m-%d")},
         "today": dt.date.today().isoformat(),
-        "me": auth[1],  # UI 據此顯示「我的出席狀態」快速回覆按鈕
-        "events": m2kcal.events_json(events),
+        "me": me,  # UI 據此顯示「我的出席狀態」快速回覆按鈕，並判斷可否編輯
+        "owners": owners,  # 納入顯示的人（me 一定在第一個），UI 依此分色/做篩選
+        "events": events,  # 每筆帶 owner 欄位（= owners 裡的 email）
+        "notes": notes,    # 解析失敗提示（多候選/未分享），UI 顯示
     }
 
 
-def show_calendar(start: str = "", days: int = 7, ctx: Context = None) -> dict[str, Any]:
+def show_calendar(start: str = "", days: int = 7, person: str = "",
+                  ctx: Context = None) -> dict[str, Any]:
     """以互動行事曆 UI 顯示行程（週/月檢視，可直接在 UI 建立與修改會議）。
     start 'YYYY-MM-DD'（預設今天）起 days 天。
+    person：同時把同事分享給你的行事曆疊在畫面上（一個或多個，逗號分隔；
+    模糊名字如 'bear' 或完整 email），UI 會依人分色並可勾選篩選、加人。
     使用者要「看行事曆／排程總覽」時優先用這個；純文字摘要用 agenda / list_events。"""
     try:
         s = (m2kcal.parse_when(start) if start
              else dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
-        return _calendar_payload(s, s + dt.timedelta(days=days), ctx)
+        return _calendar_payload(s, s + dt.timedelta(days=days), ctx, person)
     except m2kcal.M2KError as e:
         return {"error": str(e), "events": []}
     except Exception as e:  # UI 端要能顯示錯誤，不能讓 tool call 直接炸掉
         return {"error": f"讀取行程失敗：{e}", "events": []}
 
 
-def calendar_data(start: str, end: str, ctx: Context = None) -> dict[str, Any]:
-    """（行事曆 UI 專用）回指定期間的結構化行程資料。start/end 'YYYY-MM-DD'。"""
+def calendar_data(start: str, end: str, person: str = "",
+                  ctx: Context = None) -> dict[str, Any]:
+    """（行事曆 UI 專用）回指定期間的結構化行程資料。start/end 'YYYY-MM-DD'。
+    person：一個或多個（逗號分隔）同事名字/email，疊加顯示其分享的行事曆。"""
     try:
-        return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end), ctx)
+        return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end),
+                                 ctx, person)
     except m2kcal.M2KError as e:
         return {"error": str(e), "events": []}
     except Exception as e:
