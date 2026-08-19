@@ -833,7 +833,7 @@ def collect_meeting_groups(cal, start=None, end=None):
 
 def match_groups(groups, query):
     """把（模糊的）群組/會議名對應到 collect_meeting_groups 的候選。
-    正規化去掉空白/底線/連字號後做子字串比對（'cs_pd3' 命中 'CS_PD3 Daily'）。"""
+    正規化去掉空白/底線/連字號後做子字串比對（如 'team_a1' 命中 'TEAM_A1 Standup'）。"""
     def norm(s):
         return re.sub(r"[\s_\-]+", "", (s or "").lower())
     q = norm(query)
@@ -841,6 +841,98 @@ def match_groups(groups, query):
         return []
     hit = [r for r in groups if q in norm(r["title"])]
     return sorted(hit, key=lambda r: (-r["count"], r["title"]))
+
+
+# ---------- 公司通訊錄群組（CardDAV，吃 app-password，免 webmail session） ----------
+# 公司公用通訊錄 ID 不寫死在原始碼（避免進版控）；由部署以環境變數 M2K_ADBID 提供，
+# 未設定時停用部門群組查詢（find_group 會退回以會議湊名單）。
+
+
+def _carddav_home(auth=None):
+    """回 (session, home_url, host_root)。CardDAV 與 CalDAV 同一把 app-password；
+    base 由 M2K_CARDDAV_URL 或從 M2K_URL 的 host 推導（/cgi-bin/carddav），
+    通訊錄 home = addressbooks/m<adbid>/（adbid 由 M2K_ADBID 提供，未設則丟 M2KError）。"""
+    import requests
+    from urllib.parse import urlparse
+    url, user, pwd = auth or creds()
+    adbid = os.environ.get("M2K_ADBID", "").strip()
+    if not adbid:
+        raise M2KError("未設定 M2K_ADBID（公司通訊錄 ID），無法讀部門群組；"
+                       "請在部署環境設定，或改用 find_person 逐一查人。")
+    cbase = os.environ.get("M2K_CARDDAV_URL")
+    if cbase:
+        cbase = cbase.rstrip("/")
+    else:
+        host = urlparse(os.environ.get("M2K_URL", DEFAULT_URL)).netloc or "mail.gss.com.tw"
+        cbase = f"https://{host}/cgi-bin/carddav"
+    host_root = cbase.split("/cgi-bin", 1)[0]
+    s = requests.Session()
+    s.auth = (user, pwd)
+    return s, f"{cbase}/addressbooks/m{adbid}/", host_root
+
+
+def list_directory_groups(auth=None):
+    """列公司通訊錄的部門/群組樹，回 list[{name, path, href}]（用 app-password 讀
+    CardDAV，不需 webmail session）。name＝群組名、path＝在組織樹的位置（供消歧）。"""
+    s, home, _ = _carddav_home(auth)
+    body = ('<?xml version="1.0"?><d:propfind xmlns:d="DAV:">'
+            '<d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>')
+    r = s.request("PROPFIND", home, data=body,
+                  headers={"Depth": "1", "Content-Type": "application/xml"}, timeout=30)
+    if r.status_code != 207:
+        raise M2KError(f"讀公司通訊錄失敗（CardDAV 回 {r.status_code}）。")
+    groups = []
+    for resp in re.findall(r"<d:response>(.*?)</d:response>", r.text, re.S):
+        href = re.search(r"<d:href>([^<]+)</d:href>", resp)
+        nm = re.search(r"<d:displayname>([^<]*)</d:displayname>", resp)
+        if not (href and nm and nm.group(1)):
+            continue
+        label = nm.group(1).strip()
+        if label in ("/", "/(/)"):  # 樹根本身跳過
+            continue
+        name = label.split("(", 1)[0].strip()
+        pm = re.search(r"\(([^)]*)\)", label)
+        groups.append({"name": name, "path": pm.group(1) if pm else "",
+                       "href": href.group(1)})
+    return groups
+
+
+def directory_group_members(href, auth=None):
+    """讀某部門/群組集合（href 取自 list_directory_groups）的成員，
+    回 [(name, email)]（去重、去掉 vCard 殘留的 CR）。"""
+    s, _, host_root = _carddav_home(auth)
+    coll = href if href.startswith("http") else host_root + href
+    body = ('<?xml version="1.0"?><c:addressbook-query xmlns:d="DAV:" '
+            'xmlns:c="urn:ietf:params:xml:ns:carddav"><d:prop><d:getetag/>'
+            '<c:address-data/></d:prop></c:addressbook-query>')
+    r = s.request("REPORT", coll, data=body,
+                  headers={"Depth": "1", "Content-Type": "application/xml"}, timeout=30)
+    if r.status_code != 207:
+        raise M2KError(f"讀群組成員失敗（CardDAV 回 {r.status_code}）。")
+    out, seen = [], set()
+    # 逐張 vCard 取 FN + 第一個 EMAIL
+    for card in re.split(r"BEGIN:VCARD", r.text)[1:]:
+        card = card.replace("&#13;", "").replace("\r", "")
+        em = re.search(r"^EMAIL[^:]*:\s*([^\s<]+@[^\s<]+)", card, re.M | re.I)
+        if not em:
+            continue
+        email = em.group(1).strip().lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        fn = re.search(r"^FN[^:]*:\s*([^\r\n<]+)", card, re.M | re.I)
+        out.append((fn.group(1).strip() if fn else "", email))
+    return out
+
+
+def match_directory_groups(groups, query):
+    """模糊比對部門/群組名（正規化去空白/底線/連字號做子字串比對）。"""
+    def norm(s):
+        return re.sub(r"[\s_\-]+", "", (s or "").lower())
+    q = norm(query)
+    if not q:
+        return []
+    return [g for g in groups if q in norm(g["name"])]
 
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")

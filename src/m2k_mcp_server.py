@@ -693,16 +693,50 @@ def find_person(names: list[str], ctx: Context = None) -> str:
 
 
 _GROUPS_CACHE: dict[str, tuple[float, list]] = {}
+_DIRGROUPS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _dir_groups(auth):
+    """公司通訊錄部門群組（CardDAV，app-password），依使用者快取。"""
+    key = auth[1]
+    hit = _DIRGROUPS_CACHE.get(key)
+    if hit and time.time() - hit[0] < _CONTACTS_TTL:
+        return hit[1]
+    groups = m2kcal.list_directory_groups(auth)
+    _cache_put(_DIRGROUPS_CACHE, key, groups)
+    return groups
 
 
 def find_group(name: str, ctx: Context = None) -> str:
-    """把（模糊的）群組/部門/會議名（如 'cs_pd3'）展開成與會者 email 名單，供 book 帶入。
-    資料源：你行事曆近半年的會議，同標題聚合、取最近一次的與會者名單（公司通訊錄
-    的部門群組需 webmail session，MCP 拿不到，故改用你參與過的定期會議當來源）。
-    使用者說「約 cs_pd3 開會」這類群組名時先用這個展開；**多個候選或名單看來不對時，
+    """把（模糊的）群組/部門名（如 'team_a1'）展開成成員 email 名單，供 book 帶入。
+    優先查『公司通訊錄的正式部門群組』（CardDAV，用你的應用程式專用密碼即可，
+    免 webmail session）；查無相符部門時，退回『你參與過的定期會議』湊名單。
+    使用者說「約某某部門開會」這類群組名時先用這個展開；**多個候選或名單看來不對時，
     務必把名單列給使用者確認再 book，絕不自行假設成員**。"""
     try:
         auth = _auth(ctx) or m2kcal.creds()
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+
+    # 1) 公司通訊錄正式部門群組（CardDAV）
+    try:
+        dm = m2kcal.match_directory_groups(_dir_groups(auth), name)
+    except Exception:
+        dm = []  # CardDAV 讀不到（未開放/網路）就退回會議來源
+    if dm:
+        lines = [f"「{name}」在公司通訊錄找到 {len(dm)} 個部門" +
+                 ("（請確認要哪個再 book）：" if len(dm) > 1 else "：")]
+        for g in dm[:6]:
+            try:
+                emails = [em for _, em in m2kcal.directory_group_members(g["href"], auth)]
+            except Exception:
+                emails = []
+            lines.append(f"\n▸ {g['name']}  {g['path']}（{len(emails)} 人）")
+            lines.append("  成員：" + (", ".join(emails) if emails else "（讀不到成員）"))
+        return "\n".join(lines)
+
+    # 2) 退回：你參與過的定期會議湊名單
+    try:
         key = auth[1]
         hit = _GROUPS_CACHE.get(key)
         if hit and time.time() - hit[0] < _CONTACTS_TTL:
@@ -714,9 +748,9 @@ def find_group(name: str, ctx: Context = None) -> str:
         return f"錯誤：{err}"
     matches = m2kcal.match_groups(groups, name)
     if not matches:
-        return (f"找不到叫「{name}」的會議/群組。這裡的群組來自你參與過的定期會議，"
-                "沒有相符的標題；請確認名稱，或直接用 find_person 逐一查人。")
-    lines = [f"「{name}」找到 {len(matches)} 個相符會議" +
+        return (f"找不到叫「{name}」的部門或會議。公司通訊錄裡沒有相符部門，"
+                "你參與過的會議也沒有相符標題；請確認名稱，或用 find_person 逐一查人。")
+    lines = [f"「{name}」公司通訊錄無相符部門，改用你參與過的會議，找到 {len(matches)} 個" +
              ("（請確認要用哪個、名單對不對再 book）：" if len(matches) > 1 else "：")]
     for r in matches[:5]:
         emails = r["attendees"]

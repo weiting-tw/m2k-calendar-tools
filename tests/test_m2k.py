@@ -480,12 +480,12 @@ _pcal = m2kcal.person_calendar(_FakeP(), "bear_lee@gss.com.tw")
 check("person_calendar 指向 <email>/default/",
       str(_pcal.url).endswith("/calendars/bear_lee@gss.com.tw/default/"))
 
-# 21) collect_meeting_groups / match_groups：同標題聚合 + 模糊比對
-g1 = m2kcal.build_ics("CS_PD3 Daily", dt.datetime(2026, 8, 1, 10, 0),
+# 21) collect_meeting_groups / match_groups：同標題聚合 + 模糊比對（用虛構名稱）
+g1 = m2kcal.build_ics("TEAM_A1 Standup", dt.datetime(2026, 8, 1, 10, 0),
                       dt.datetime(2026, 8, 1, 10, 30),
                       attendees=["a@x.com", "b@x.com"], organizer="lead@x.com",
                       uid="G1", stamp="Z")
-g2 = m2kcal.build_ics("CS_PD3 Daily", dt.datetime(2026, 8, 8, 10, 0),
+g2 = m2kcal.build_ics("TEAM_A1 Standup", dt.datetime(2026, 8, 8, 10, 0),
                       dt.datetime(2026, 8, 8, 10, 30),
                       attendees=["a@x.com", "c@x.com"], organizer="lead@x.com",
                       uid="G2", stamp="Z")
@@ -497,14 +497,24 @@ class _FakeCal:
         return [_fake(g1), _fake(g2), _fake(g3)]
 grps = m2kcal.collect_meeting_groups(_FakeCal())
 check("群組：同標題聚合成一筆",
-      len([g for g in grps if g["title"] == "CS_PD3 Daily"]) == 1)
-_csg = next(g for g in grps if g["title"] == "CS_PD3 Daily")
+      len([g for g in grps if g["title"] == "TEAM_A1 Standup"]) == 1)
+_csg = next(g for g in grps if g["title"] == "TEAM_A1 Standup")
 check("群組：count 累加", _csg["count"] == 2)
 check("群組：名單取最近一次（含 organizer、去重）",
       set(_csg["attendees"]) == {"a@x.com", "c@x.com", "lead@x.com"})
-check("match_groups 模糊命中（cs_pd3 → CS_PD3 Daily）",
-      bool(m2kcal.match_groups(grps, "cs_pd3"))
-      and m2kcal.match_groups(grps, "cs_pd3")[0]["title"] == "CS_PD3 Daily")
+check("match_groups 模糊命中（team_a1 → TEAM_A1 Standup）",
+      bool(m2kcal.match_groups(grps, "team_a1"))
+      and m2kcal.match_groups(grps, "team_a1")[0]["title"] == "TEAM_A1 Standup")
 check("match_groups 查無回空", m2kcal.match_groups(grps, "zzz") == [])
+
+# 22) match_directory_groups：部門名模糊比對（正規化去底線/空白；用虛構名稱）
+_dirg = [{"name": "ENG_A1_GRP", "path": "/ORG/ENG/ENG_A1_GRP", "href": "/h1"},
+         {"name": "ENG_A2_GRP", "path": "/ORG/ENG/ENG_A2_GRP", "href": "/h2"},
+         {"name": "SALES", "path": "/ORG/SALES", "href": "/h3"}]
+check("match_directory 命中（eng a1 → ENG_A1_GRP）",
+      [g["name"] for g in m2kcal.match_directory_groups(_dirg, "eng a1")] == ["ENG_A1_GRP"])
+check("match_directory 前綴命中多筆（eng_a → 兩個部門）",
+      len(m2kcal.match_directory_groups(_dirg, "eng_a")) == 2)
+check("match_directory 查無回空", m2kcal.match_directory_groups(_dirg, "zzz") == [])
 
 print("\n全部通過 ✅")
