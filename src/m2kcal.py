@@ -784,6 +784,65 @@ def collect_contacts(cal, start=None, end=None):
     return out
 
 
+def collect_meeting_groups(cal, start=None, end=None):
+    """把行事曆裡『同標題的會議』聚成候選群組，回 list（依出現次數排序）：
+    每個 {title, attendees:[email], names:{email:name}, count, last, organizer}。
+    公司通訊錄的部門群組 MCP 拿不到（需 webmail session），這裡改用你自己
+    定期會議的與會者名單當群組來源。attendees 取『最近一次出現』那場的名單
+    （最貼近現況）；organizer 也併入 attendees。"""
+    start = start or dt.datetime.now() - dt.timedelta(days=180)
+    end = end or dt.datetime.now() + dt.timedelta(days=90)
+    groups = {}
+    for ev in cal.search(start=start, end=end, event=True, expand=True):
+        c = ev.icalendar_component
+        title = str(c.get("summary", "")).strip()
+        if not title:
+            continue
+        when = ""
+        try:
+            when = c.get("dtstart").dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        people = []
+        a = c.get("attendee")
+        if a:
+            people += [_addr(x) for x in (a if isinstance(a, list) else [a])]
+        org = c.get("organizer")
+        if org:
+            people.append(_addr(org))
+        rec = groups.setdefault(title, {"title": title, "count": 0, "last": "",
+                                        "attendees": [], "names": {},
+                                        "organizer": ""})
+        rec["count"] += 1
+        if when >= rec["last"]:  # 最近一次出現的名單覆蓋（roster 取最新）
+            rec["last"] = when
+            seen, atts, names = set(), [], {}
+            for name, email in people:
+                email = email.strip().lower()
+                if "@" not in email or email in seen:
+                    continue
+                seen.add(email)
+                atts.append(email)
+                if name and name != email:
+                    names[email] = name
+            rec["attendees"] = atts
+            rec["names"] = names
+            rec["organizer"] = _addr(org)[0] if org else ""
+    return sorted(groups.values(), key=lambda r: (-r["count"], r["title"]))
+
+
+def match_groups(groups, query):
+    """把（模糊的）群組/會議名對應到 collect_meeting_groups 的候選。
+    正規化去掉空白/底線/連字號後做子字串比對（'cs_pd3' 命中 'CS_PD3 Daily'）。"""
+    def norm(s):
+        return re.sub(r"[\s_\-]+", "", (s or "").lower())
+    q = norm(query)
+    if not q:
+        return []
+    hit = [r for r in groups if q in norm(r["title"])]
+    return sorted(hit, key=lambda r: (-r["count"], r["title"]))
+
+
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 DEFAULT_IMAP_HOST = "mail.gss.com.tw"

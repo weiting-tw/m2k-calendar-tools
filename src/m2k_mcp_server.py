@@ -692,6 +692,42 @@ def find_person(names: list[str], ctx: Context = None) -> str:
     return "\n".join(lines)
 
 
+_GROUPS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def find_group(name: str, ctx: Context = None) -> str:
+    """把（模糊的）群組/部門/會議名（如 'cs_pd3'）展開成與會者 email 名單，供 book 帶入。
+    資料源：你行事曆近半年的會議，同標題聚合、取最近一次的與會者名單（公司通訊錄
+    的部門群組需 webmail session，MCP 拿不到，故改用你參與過的定期會議當來源）。
+    使用者說「約 cs_pd3 開會」這類群組名時先用這個展開；**多個候選或名單看來不對時，
+    務必把名單列給使用者確認再 book，絕不自行假設成員**。"""
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+        key = auth[1]
+        hit = _GROUPS_CACHE.get(key)
+        if hit and time.time() - hit[0] < _CONTACTS_TTL:
+            groups = hit[1]
+        else:
+            groups = m2kcal.collect_meeting_groups(_cal(auth))
+            _cache_put(_GROUPS_CACHE, key, groups)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    matches = m2kcal.match_groups(groups, name)
+    if not matches:
+        return (f"找不到叫「{name}」的會議/群組。這裡的群組來自你參與過的定期會議，"
+                "沒有相符的標題；請確認名稱，或直接用 find_person 逐一查人。")
+    lines = [f"「{name}」找到 {len(matches)} 個相符會議" +
+             ("（請確認要用哪個、名單對不對再 book）：" if len(matches) > 1 else "：")]
+    for r in matches[:5]:
+        emails = r["attendees"]
+        lines.append(f"\n▸ {r['title']}（出現 {r['count']} 次，最近 {r['last'] or '?'}，"
+                     f"{len(emails)} 人）")
+        if r["organizer"]:
+            lines.append(f"  召集人：{r['organizer']}")
+        lines.append("  與會者：" + (", ".join(emails) if emails else "（此會議無與會者欄位）"))
+    return "\n".join(lines)
+
+
 def _resolve_person(auth, name):
     """把（模糊的）名字解析成單一 email。回 (email, err)：email 有值＝唯一
     命中或本就是完整 email；err 有值＝找不到／多候選（訊息可直接回使用者）。
@@ -953,7 +989,7 @@ def _register_prompts(server: "FastMCP") -> None:
                 f"{now:%H:%M} 台北 +08:00")
 
 
-TOOLS = (list_calendars, search_events, find_free_slots, find_person,
+TOOLS = (list_calendars, search_events, find_free_slots, find_person, find_group,
          get_event, list_invitations)
 # 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
 # （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）

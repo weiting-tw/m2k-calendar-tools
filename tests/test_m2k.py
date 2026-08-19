@@ -480,4 +480,31 @@ _pcal = m2kcal.person_calendar(_FakeP(), "bear_lee@gss.com.tw")
 check("person_calendar 指向 <email>/default/",
       str(_pcal.url).endswith("/calendars/bear_lee@gss.com.tw/default/"))
 
+# 21) collect_meeting_groups / match_groups：同標題聚合 + 模糊比對
+g1 = m2kcal.build_ics("CS_PD3 Daily", dt.datetime(2026, 8, 1, 10, 0),
+                      dt.datetime(2026, 8, 1, 10, 30),
+                      attendees=["a@x.com", "b@x.com"], organizer="lead@x.com",
+                      uid="G1", stamp="Z")
+g2 = m2kcal.build_ics("CS_PD3 Daily", dt.datetime(2026, 8, 8, 10, 0),
+                      dt.datetime(2026, 8, 8, 10, 30),
+                      attendees=["a@x.com", "c@x.com"], organizer="lead@x.com",
+                      uid="G2", stamp="Z")
+g3 = m2kcal.build_ics("別的會", dt.datetime(2026, 8, 2, 14, 0),
+                      dt.datetime(2026, 8, 2, 15, 0),
+                      attendees=["d@x.com"], uid="G3", stamp="Z")
+class _FakeCal:
+    def search(self, **kw):
+        return [_fake(g1), _fake(g2), _fake(g3)]
+grps = m2kcal.collect_meeting_groups(_FakeCal())
+check("群組：同標題聚合成一筆",
+      len([g for g in grps if g["title"] == "CS_PD3 Daily"]) == 1)
+_csg = next(g for g in grps if g["title"] == "CS_PD3 Daily")
+check("群組：count 累加", _csg["count"] == 2)
+check("群組：名單取最近一次（含 organizer、去重）",
+      set(_csg["attendees"]) == {"a@x.com", "c@x.com", "lead@x.com"})
+check("match_groups 模糊命中（cs_pd3 → CS_PD3 Daily）",
+      bool(m2kcal.match_groups(grps, "cs_pd3"))
+      and m2kcal.match_groups(grps, "cs_pd3")[0]["title"] == "CS_PD3 Daily")
+check("match_groups 查無回空", m2kcal.match_groups(grps, "zzz") == [])
+
 print("\n全部通過 ✅")

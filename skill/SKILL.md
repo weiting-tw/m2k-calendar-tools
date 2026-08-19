@@ -19,6 +19,7 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
 | 找自己的空檔（「明天哪裡有空 1 小時」） | MCP 工具：`find_free_slots` |
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
+| 模糊群組名展開成員排會議（「約 cs_pd3 開會」） | MCP 工具：`find_group`（比對你參與過的定期會議、展開其與會者；多候選/名單要向使用者確認後再 book） |
 | 建重複會議 / 加提醒 | `book` 的 `repeat`（daily/weekly/monthly）+ `repeat_until`、`reminder_minutes` |
 | 互動行事曆畫面（週/月檢視、UI 上直接增改刪、拖曳改時間） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI；agenda/list_events/book/update_event/respond_event/delete_event 也會帶出同一個畫面） |
 | 回覆會議邀請（接受/暫定/拒絕，只改自己日曆） | MCP 工具：`respond_event` |
@@ -66,7 +67,9 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 
 ## 已知限制
 
-- 純郵件群組（distribution list，如 xxx@gss.com.tw）無法展開成員（資料源不開放）。
+- 公司通訊錄的部門/群組展開需 webmail session，MCP 拿不到；`find_group` 改用「你參與過的
+  定期會議與會者」當群組來源（名單可能略舊，book 前讓使用者確認）。要正牌部門名單走
+  webmail 腳本 `m2k-group-book.user.js`。純郵件群組（distribution list）仍無法展開。
 - 看他人行事曆需對方先在 webmail 把行事曆分享給你；分享後即可用 `person` 查完整行程，
   未分享則無法查（伺服器回 404）。沒有 API 能列出「誰分享給我」，需自己知道對方帳號。
 - 使用者腳本必須裝在 webmail（Tampermonkey），且新版 Chrome 需開「允許使用者指令碼」。
