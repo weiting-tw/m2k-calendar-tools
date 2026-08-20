@@ -517,4 +517,10 @@ check("match_directory 前綴命中多筆（eng_a → 兩個部門）",
       len(m2kcal.match_directory_groups(_dirg, "eng_a")) == 2)
 check("match_directory 查無回空", m2kcal.match_directory_groups(_dirg, "zzz") == [])
 
+check("group_mailbox 部門名轉小寫＋使用者網域",
+      m2kcal.group_mailbox("ENG_A1_GRP", "me@example.com") == "eng_a1_grp@example.com")
+check("group_mailbox 去空白", m2kcal.group_mailbox("  ENG_A1  ", "me@example.com")
+      == "eng_a1@example.com")
+check("group_mailbox 無網域回空", m2kcal.group_mailbox("ENG_A1", "nodomain") == "")
+
 print("\n全部通過 ✅")

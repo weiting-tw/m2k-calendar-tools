@@ -707,6 +707,28 @@ def _dir_groups(auth):
     return groups
 
 
+def _known_addresses(auth) -> set:
+    """使用者自己往來過的位址集合（行事曆歷史＋信件往來），用來判斷推導出的
+    群組信箱是否真的存在——避免把猜的位址當成真的、寄出去退信。"""
+    out = set()
+    try:
+        key = auth[1]
+        hit = _CONTACTS_CACHE.get(key)
+        if hit and time.time() - hit[0] < _CONTACTS_TTL:
+            out |= set(hit[1])
+        else:
+            c = m2kcal.collect_contacts(_cal(auth))
+            _cache_put(_CONTACTS_CACHE, key, c)
+            out |= set(c)
+    except Exception:
+        pass
+    try:
+        out |= set(_mail_contacts(auth))
+    except Exception:
+        pass
+    return out
+
+
 def find_group(name: str, ctx: Context = None) -> str:
     """把（模糊的）群組/部門名（如 'team_a1'）展開成成員 email 名單，供 book 帶入。
     優先查『公司通訊錄的正式部門群組』（CardDAV，用你的應用程式專用密碼即可，
@@ -726,6 +748,7 @@ def find_group(name: str, ctx: Context = None) -> str:
         dm = []
         dir_err = f"{type(e).__name__}: {e}"
     if dm:
+        known = _known_addresses(auth)  # 用來確認群組信箱是否真的存在（見下）
         lines = [f"「{name}」在公司通訊錄找到 {len(dm)} 個部門" +
                  ("（請確認要哪個再 book）：" if len(dm) > 1 else "：")]
         for g in dm[:6]:
@@ -734,7 +757,14 @@ def find_group(name: str, ctx: Context = None) -> str:
             except Exception:
                 emails = []
             lines.append(f"\n▸ {g['name']}  {g['path']}（{len(emails)} 人）")
+            box = m2kcal.group_mailbox(g["name"], auth[1])
+            if box:
+                seen = "（你的往來紀錄中存在）" if box in known else "（推測，未見於你的往來紀錄，不確定是否存在）"
+                lines.append(f"  群組信箱：{box} {seen}")
             lines.append("  成員：" + (", ".join(emails) if emails else "（讀不到成員）"))
+        lines.append("\n說明：book 時把**個別成員**放 attendees 才會每人收到邀請並能回覆出席；"
+                     "群組信箱只是一個收件位址、不會展開成員。要讓群組也留一份紀錄，"
+                     "可把「群組信箱＋個別成員」一起放進 attendees。")
         return "\n".join(lines)
 
     # 2) 退回：你參與過的定期會議湊名單

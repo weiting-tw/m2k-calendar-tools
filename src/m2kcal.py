@@ -925,6 +925,16 @@ def directory_group_members(href, auth=None):
     return out
 
 
+def group_mailbox(group_name, user_email):
+    """由部門名推導群組信箱（部門名小寫 @ 使用者網域），如
+    'ENG_A1_GRP' → 'eng_a1_grp@<domain>'。Mail2000 的部門群組信箱採此命名。
+    只是推導：呼叫端應自行確認是否真的存在（見 find_group 的標註）。"""
+    dom = user_email.split("@")[-1] if "@" in (user_email or "") else ""
+    if not dom:
+        return ""
+    return f"{group_name.strip().lower()}@{dom}"
+
+
 def match_directory_groups(groups, query):
     """模糊比對部門/群組名（正規化去空白/底線/連字號做子字串比對）。"""
     def norm(s):
