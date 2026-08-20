@@ -934,8 +934,9 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     """找空檔（free-busy）。回傳工作時段內長度足夠的可預約時間。
     duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
     day_start/day_end 每天的可排時段；include_weekends 是否含週末；
-    attendees 一併查這些人的忙碌時段、回傳大家都有空的時間
-    （email 清單，可先用 find_person 查；伺服器不支援查他人時會明講）。"""
+    attendees 一併查這些人的忙碌時段、回傳大家都有空的時間（email 清單，可先用
+    find_person / find_group 查）。伺服器不支援排程 free-busy 時，會改讀
+    「對方已分享給你的行事曆」計算，並列出未分享（未納入計算）的人。"""
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -947,6 +948,7 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
         others_note = ""
+        src_note = ""
         if attendees:
             try:
                 others = m2kcal.freebusy_others(auth, p, attendees, s, e)
@@ -956,10 +958,17 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
                 if missing:
                     others_note = ("  ⚠ 查不到這些人的忙碌資料（結果未包含他們）: "
                                    + ", ".join(missing))
-            except m2kcal.M2KError as err:
-                return (f"錯誤：{err}\n"
-                        "（此伺服器無法查他人空檔時，只能各自用 find_free_slots "
-                        "查自己的，再人工協調。）")
+            except m2kcal.M2KError:
+                # 伺服器不支援 RFC 6638 排程 free-busy（Mail2000 即是）→
+                # 改讀「對方已分享給你的行事曆」算忙碌時段，讀不到的明確列出
+                sbusy, missing = m2kcal.busy_from_shared(p, attendees, s, e)
+                busy += sbusy
+                got = len(attendees) - len(missing)
+                src_note = (f"（他人忙碌時段取自其分享給你的行事曆，已納入 {got} 人；"
+                            "此伺服器不支援排程 free-busy 查詢）")
+                if missing:
+                    others_note = ("  ⚠ 這些人沒有把行事曆分享給你，未納入計算："
+                                   + ", ".join(missing))
         slots = m2kcal.free_slots(busy, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
     except m2kcal.M2KError as err:
@@ -973,6 +982,8 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
     out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
            f"≥ {duration_minutes} 分鐘的空檔："]
+    if src_note:
+        out.append(src_note)
     if others_note:
         out.append(others_note)
     cur = None

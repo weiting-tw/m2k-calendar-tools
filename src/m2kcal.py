@@ -1213,6 +1213,33 @@ def free_slots(busy, start, end, duration_min=60,
             if (e0 - s0).total_seconds() >= duration_min * 60]
 
 
+def busy_from_shared(principal, emails, s, e):
+    """從「已分享給你的日曆」讀出這些人的忙碌區間——伺服器不支援 RFC 6638
+    排程 free-busy 時的替代做法。回 (busy, missing)：busy 為 [(開始, 結束)]
+    區間清單（可餵 free_slots）、missing 為讀不到（未分享/不存在）的 email。
+    全天事件視為整天忙碌（例如請假），避免把會排進當天。"""
+    busy, missing = [], []
+    for em in emails or []:
+        em = (em or "").strip().lower()
+        if not em:
+            continue
+        try:
+            evs = person_calendar(principal, em).search(
+                start=s, end=e, event=True, expand=True)
+        except Exception:
+            missing.append(em)
+            continue
+        for r in _event_rows(evs):
+            a = r["start"]
+            b = r["end"] or a
+            if r["allday"]:
+                a = a.replace(hour=0, minute=0, second=0, microsecond=0)
+                b = max(b, a + dt.timedelta(days=1))  # DTEND 為排他日期
+            if b > a:
+                busy.append((a, b))
+    return busy, missing
+
+
 def freebusy_others(auth, principal, emails, s, e):
     """RFC 6638 排程 free-busy：POST VFREEBUSY 到自己的 schedule-outbox，
     查多位使用者的忙碌時段。回 {email: [(start,end)…台北 naive]}。

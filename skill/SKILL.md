@@ -17,7 +17,7 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 查自己行程 / 建會議 / 改會議 / 刪會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `delete_event` / `list_calendars` |
 | 查同事分享給你的行事曆（「bear 這週有什麼會」） | `agenda` / `list_events` 帶 `person`（模糊名字或完整 email；對方需先在 webmail 分享，未分享會回提示） |
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
-| 找自己的空檔（「明天哪裡有空 1 小時」） | MCP 工具：`find_free_slots` |
+| 找空檔（自己／多人共同空檔） | MCP 工具：`find_free_slots`（帶 `attendees` 算共同空檔；伺服器不支援排程 free-busy，會改讀對方**已分享給你**的行事曆，並列出未分享＝未納入計算的人） |
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
 | 模糊群組名展開成員排會議（「約某某部門開會」） | MCP 工具：`find_group`（優先讀公司通訊錄的**正式部門群組**——CardDAV，用應用程式專用密碼即可；查無部門才退回你參與過的定期會議。多候選/名單要向使用者確認後再 book） |
 | 建重複會議 / 加提醒 | `book` 的 `repeat`（daily/weekly/monthly）+ `repeat_until`、`reminder_minutes` |
@@ -73,6 +73,8 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 - 群組信箱（部門名小寫@網域）只是**一個收件位址、不會展開成員**；要每人收到邀請並能回覆出席，
   必須把個別成員放進 attendees。`find_group` 會一併列出群組信箱並標註是否確實存在，可
   「群組信箱＋個別成員」一起帶入。純郵件群組（distribution list）本身仍無法展開成員。
+- 多人共同空檔只涵蓋「已把行事曆分享給你」的人；未分享者會被列出並排除在計算外——
+  務必把這份名單轉達使用者，別讓人誤以為所有與會者都算進去了。
 - 看他人行事曆需對方先在 webmail 把行事曆分享給你；分享後即可用 `person` 查完整行程，
   未分享則無法查（伺服器回 404）。沒有 API 能列出「誰分享給我」，需自己知道對方帳號。
 - 使用者腳本必須裝在 webmail（Tampermonkey），且新版 Chrome 需開「允許使用者指令碼」。

@@ -523,4 +523,37 @@ check("group_mailbox 去空白", m2kcal.group_mailbox("  ENG_A1  ", "me@example.
       == "eng_a1@example.com")
 check("group_mailbox 無網域回空", m2kcal.group_mailbox("ENG_A1", "nodomain") == "")
 
+# 23) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
+_sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
+                             dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")
+_sh_allday = m2kcal.build_ics("休假", dt.datetime(2026, 8, 4), dt.datetime(2026, 8, 5),
+                              uid="S2", stamp="Z", all_day=True)
+class _FakeSharedCal:
+    def search(self, **kw):
+        return [_fake(_sh_timed), _fake(_sh_allday)]
+_orig_pc = m2kcal.person_calendar
+def _fake_pc(principal, email):
+    if email == "noshare@x.com":
+        raise RuntimeError("404 Not Found")   # 未分享
+    return _FakeSharedCal()
+m2kcal.person_calendar = _fake_pc
+try:
+    _busy, _missing = m2kcal.busy_from_shared(
+        None, ["a@x.com", "noshare@x.com"],
+        dt.datetime(2026, 8, 1), dt.datetime(2026, 8, 8))
+finally:
+    m2kcal.person_calendar = _orig_pc
+check("busy_from_shared 未分享列入 missing", _missing == ["noshare@x.com"])
+check("busy_from_shared 一般事件成為忙碌區間",
+      (dt.datetime(2026, 8, 3, 10, 0), dt.datetime(2026, 8, 3, 11, 0)) in _busy)
+check("busy_from_shared 全天＝整天忙碌",
+      (dt.datetime(2026, 8, 4, 0, 0), dt.datetime(2026, 8, 5, 0, 0)) in _busy)
+# 併入 free_slots：8/3 10-11 被扣掉、8/4 整天無空檔
+_slots = m2kcal.free_slots(_busy, dt.datetime(2026, 8, 3), dt.datetime(2026, 8, 5), 60)
+check("free_slots 扣掉分享日曆的忙碌時段",
+      all(not (a < dt.datetime(2026, 8, 3, 11) and b > dt.datetime(2026, 8, 3, 10))
+          for a, b in _slots))
+check("free_slots 全天忙碌日無空檔",
+      all(a.date() != dt.date(2026, 8, 4) for a, b in _slots))
+
 print("\n全部通過 ✅")
