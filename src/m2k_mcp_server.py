@@ -198,6 +198,9 @@ def book(title: str, start: str, end: str = "", location: str = "",
     calendar 指定寫入的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）；
     notify=true 時以你的名義寄標準會議邀請信（iMIP）給與會者——寄信是對外動作，
     使用者明確要求通知才帶 true。若時段與現有行程重疊會附警告。
+    使用者以**部門／群組名**指定與會者時（如「約 XX 部門開會」），**務必先呼叫
+    find_group 取得當前名單**，並照它的「建議 attendees」帶入（＝群組信箱＋個別成員）；
+    不要憑記憶或先前對話的舊名單，成員會異動、也會漏掉群組信箱。
     """
     try:
         s = m2kcal.parse_when(start)
@@ -762,9 +765,12 @@ def find_group(name: str, ctx: Context = None) -> str:
                 seen = "（你的往來紀錄中存在）" if box in known else "（推測，未見於你的往來紀錄，不確定是否存在）"
                 lines.append(f"  群組信箱：{box} {seen}")
             lines.append("  成員：" + (", ".join(emails) if emails else "（讀不到成員）"))
-        lines.append("\n說明：book 時把**個別成員**放 attendees 才會每人收到邀請並能回覆出席；"
-                     "群組信箱只是一個收件位址、不會展開成員。要讓群組也留一份紀錄，"
-                     "可把「群組信箱＋個別成員」一起放進 attendees。")
+            if emails:
+                rec = ([box] if box and box in known else []) + emails
+                lines.append("  ✦ book 建議 attendees（直接照抄這串）：" + ", ".join(rec))
+        lines.append("\n說明：個別成員放進 attendees 才會每人收到邀請並能回覆出席；群組信箱"
+                     "只是一個收件位址、不會展開成員，一起帶可讓群組也留一份紀錄。"
+                     "請用上面「建議 attendees」那一串，不要只帶群組信箱、也不要漏掉它。")
         return "\n".join(lines)
 
     # 2) 退回：你參與過的定期會議湊名單
