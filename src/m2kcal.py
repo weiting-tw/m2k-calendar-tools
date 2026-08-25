@@ -29,6 +29,8 @@ m2kcal — Mail2000 (m2k) 行事曆 CLI
 import os
 import re
 import sys
+import threading
+import time
 import argparse
 import getpass
 import datetime as dt
@@ -37,10 +39,16 @@ from html import escape as _esc
 
 TW_TZ = dt.timezone(dt.timedelta(hours=8))  # Asia/Taipei
 
-try:
-    import caldav
-except ImportError:
-    sys.exit("需要 caldav 套件，請先執行:  pip install caldav icalendar")
+def _caldav():
+    """延遲載入 caldav。ICS 產生/解析、時間處理這些純函式用不到它，
+    頂層 import 會讓「離線測試」與 CI 也被迫安裝 CalDAV 相關套件
+    ——先前 tests/test_m2k.py 就是因此整批跑不起來（21 個受測函式全是純函式）。
+    丟 M2KError 而不是 sys.exit：MCP server 不該因為缺套件被整個殺掉。"""
+    try:
+        import caldav
+    except ImportError:
+        raise M2KError("需要 caldav 套件，請先執行:  pip install caldav icalendar")
+    return caldav
 
 DEFAULT_URL = "https://mail.gss.com.tw/cgi-bin/cal/caldav/"
 
@@ -109,12 +117,71 @@ def parse_basic_auth(header):
 
 
 # ---------- 連線 ----------
+# 「跳過壞資料」的痕跡。解析失敗時繼續處理其他筆是對的（比整批失敗好），
+# 但完全靜默的話，使用者看到的是「行程少了幾筆」而不是錯誤 —— 這種失敗
+# 比崩潰危險，因為它看起來像正常運作。
+# 用 thread-local：MCP server 把 tool 丟到 worker thread（見 _offload），
+# 全域 list 會讓 A 使用者的警告混進 B 的回覆裡。
+_notes = threading.local()
+_NOTES_MAX = 20          # 同類錯誤通常成千上百筆，留幾則代表就夠
+
+
+def clear_notes() -> None:
+    _notes.items = []
+
+
+def note(what: str, err: BaseException | None = None) -> None:
+    """記一筆「跳過了什麼」。訊息要能讓人判斷嚴重性，不是只寫 error。"""
+    items = getattr(_notes, "items", None)
+    if items is None:
+        items = _notes.items = []
+    if len(items) >= _NOTES_MAX:
+        return
+    msg = what if err is None else f"{what}（{type(err).__name__}: {err}）"
+    if msg not in items:
+        items.append(msg)
+
+
+def take_notes() -> list[str]:
+    """取出並清空累積的警告。"""
+    items = getattr(_notes, "items", None) or []
+    _notes.items = []
+    return items
+
+
+# 讀取路徑的重試：CalDAV/IMAP 走公司網路，單次抖動就讓使用者看到失敗。
+# 只用在「冪等」操作（查詢、取回）—— 寫入絕不能盲目重試：Mail2000 的 PUT
+# 回 500 時事件可能已寫入（見 put_and_verify），重試會建出重複事件。
+RETRY_TRIES = int(os.environ.get("M2K_RETRY_TRIES", "3"))
+RETRY_BASE_DELAY = float(os.environ.get("M2K_RETRY_DELAY", "0.4"))
+# 這些是「重試也不會好」的錯誤，浪費時間還延後回報，直接放棄
+_NO_RETRY = ("401", "403", "unauthorized", "forbidden", "authentication")
+
+
+def retry_read(fn, *, tries=None, what=""):
+    """重試冪等讀取。回傳 fn() 的結果；全部失敗則丟最後一個例外。
+    認證類錯誤不重試。延遲用指數退避（0.4s、0.8s…）。"""
+    tries = tries or RETRY_TRIES
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as err:
+            last = err
+            msg = str(err).lower()
+            if any(k in msg for k in _NO_RETRY):
+                break
+            if i < tries - 1:
+                time.sleep(RETRY_BASE_DELAY * (2 ** i))
+    raise last
+
+
 def connect(auth=None):
     """auth=(url, user, pwd) 可覆寫憑證（MCP HTTP 模式每請求不同人）；
     未給則走 creds()（環境變數 / .env / 互動輸入）。"""
     url, user, pwd = auth or creds()
     # timeout 必設：MCP OAuth 登入頁會等這個驗證，無 timeout 時瀏覽器端會無限轉圈
-    client = caldav.DAVClient(url=url, username=user, password=pwd, timeout=30)
+    client = _caldav().DAVClient(url=url, username=user, password=pwd, timeout=30)
     try:
         principal = client.principal()
     except Exception as e:
@@ -721,8 +788,8 @@ def collect_contacts(cal, start=None, end=None):
         when = ""
         try:
             when = c.get("dtstart").dt.strftime("%Y-%m-%d")
-        except Exception:
-            pass
+        except Exception as _e:
+            note("有事件的與會者欄位解析失敗，聯絡人清單可能不完整", _e)
         people = []
         a = c.get("attendee")
         if a:
@@ -769,8 +836,8 @@ def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
                 s = b.decode("ascii", "replace")
                 if "\\Sent" in s:
                     folders.append(s.rsplit('"/"', 1)[-1].strip())
-        except Exception:
-            pass
+        except Exception as _e:
+            note("有信件或資料夾讀取失敗，信件聯絡人池可能不完整", _e)
         for folder in folders:
             try:
                 typ, data = M.select(folder, readonly=True)
@@ -779,7 +846,8 @@ def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
                     continue
                 rng = f"{max(1, total - per_folder + 1)}:{total}"
                 typ, parts = M.fetch(rng, "(BODY.PEEK[HEADER.FIELDS (FROM TO CC DATE)])")
-            except Exception:
+            except Exception as _e:
+                note("有信件或資料夾讀取失敗，信件聯絡人池可能不完整", _e)
                 continue
             for part in parts or []:
                 if not (isinstance(part, tuple) and len(part) > 1):
@@ -789,8 +857,8 @@ def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
                 try:
                     d = _eutils.parsedate_to_datetime(msg.get("Date", ""))
                     day = d.strftime("%Y-%m-%d")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    note("有信件或資料夾讀取失敗，信件聯絡人池可能不完整", _e)
                 pairs = _eutils.getaddresses(
                     (msg.get_all("From") or []) + (msg.get_all("To") or [])
                     + (msg.get_all("Cc") or []))
@@ -802,8 +870,8 @@ def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
                         nm = str().join(
                             s.decode(c or "utf-8", "replace") if isinstance(s, bytes) else s
                             for s, c in decode_header(nm))
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        note("有信件或資料夾讀取失敗，信件聯絡人池可能不完整", _e)
                     rec = out.setdefault(em, {"name": "", "count": 0, "last": ""})
                     rec["count"] += 1
                     if nm and not rec["name"]:
@@ -813,8 +881,8 @@ def imap_recent_contacts(user, pwd, host=None, per_folder=1500):
     finally:
         try:
             M.logout()
-        except Exception:
-            pass
+        except Exception as _e:
+            note("有信件或資料夾讀取失敗，信件聯絡人池可能不完整", _e)
     return out
 
 
@@ -830,7 +898,8 @@ def parse_invitation_bytes(raw):
         try:
             ics = part.get_payload(decode=True).decode(
                 part.get_content_charset() or "utf-8", "replace")
-        except Exception:
+        except Exception as _e:
+            note("有邀請信內容解析失敗，已跳過", _e)
             continue
         unfolded = ics.replace("\r\n ", "").replace("\n ", "")
         m = re.search(r"^METHOD:(\S+)", unfolded, re.M)
@@ -887,8 +956,8 @@ def imap_recent_invitations(user, pwd, host=None, days=14, per_folder=300):
     finally:
         try:
             box.logout()
-        except Exception:
-            pass
+        except Exception as _e:
+            note("有邀請信解析失敗，邀請清單可能不完整", _e)
     return out
 
 
@@ -1355,17 +1424,22 @@ def send_invite(user, pwd, to, subject, body, ics_text, host=None):
     finally:
         try:
             s.quit()
-        except Exception:
-            pass
+        except Exception as _e:
+            note("寄送通知信失敗，與會者不會收到邀請信", _e)
     return len(to)
 
 
 def find_event_by_uid(cal, uid):
     """依 UID 取回既有事件（uid 見 agenda/list 輸出的 id: 欄位）。"""
     try:
-        return cal.event_by_uid(uid)
+        return retry_read(lambda: cal.event_by_uid(uid), what=f"event_by_uid {uid}")
     except Exception:
         raise M2KError(f"找不到 id 為 {uid} 的事件。請先用 agenda/list 查出正確的 id。")
+
+
+def search_events(cal, **kw):
+    """cal.search 的重試版（查詢是冪等的，值得重試一次網路抖動）。"""
+    return retry_read(lambda: cal.search(**kw), what="search")
 
 
 def put_and_verify(cal, ics, uid, auth=None, put_url=None, expect_seq=None):

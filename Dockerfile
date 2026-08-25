@@ -30,5 +30,11 @@ ENV M2K_BRIDGE_KEY_FILE=/data/bridge-key \
     M2K_AUTH_LOG=/data/auth.log
 
 EXPOSE 8763
+
+# 只靠 restart policy 救不了「活著但壞掉」（事件循環卡住時 port 仍是通的），
+# 所以打一個真實 HTTP 請求。4xx 也算健康：server 有在處理，只是請求不合 MCP 格式。
+HEALTHCHECK --interval=30s --timeout=6s --start-period=20s --retries=3 \
+    CMD ["python", "src/healthcheck.py"]
+
 ENTRYPOINT ["python", "src/m2k_mcp_server.py"]
 CMD ["--http", "--host", "0.0.0.0", "--port", "8763"]

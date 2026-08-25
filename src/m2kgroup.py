@@ -42,17 +42,21 @@ import re
 import argparse
 from html.parser import HTMLParser
 
-try:
-    import requests
-except ImportError:
-    sys.exit("需要 requests 套件，請先執行:  pip install requests")
+def _requests():
+    """延遲載入 requests。HTML 解析（MemberParser）是純函式，離線測試用不到它 ——
+    頂層 import 會讓測試在沒裝 requests 的環境整批跑不起來。"""
+    try:
+        import requests
+    except ImportError:
+        sys.exit("需要 requests 套件，請先執行:  pip install requests")
+    return requests
 
 BASE = os.environ.get("M2K_BASE", "https://mail.gss.com.tw")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def session():
-    s = requests.Session()
+    s = _requests().Session()
     cookie = os.environ.get("M2K_COOKIE")
     if cookie:
         s.headers["Cookie"] = cookie

@@ -13,7 +13,38 @@ env:
   IMAGE: a26007565/m2k-calendar
 
 jobs:
+  # 閘門：測試沒過就不發佈 image。部署端是 Watchtower 自動拉 :latest，
+  # 沒有這道閘門的話，未經測試的 commit 會直接進生產環境。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 使用者腳本離線測試（jsdom）
+        run: |
+          npm ci
+          npm test
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 行事曆離線單元測試
+        # 只需 icalendar：caldav 是延遲載入的，純函式測試用不到（見 m2kcal._caldav）
+        run: |
+          python -m pip install --quiet icalendar
+          python tests/test_m2k.py
+
+      - name: healthcheck 腳本可執行（server 沒起來時要回 unhealthy）
+        run: |
+          if python src/healthcheck.py; then
+            echo "::error::server 沒啟動卻回報 healthy" && exit 1
+          fi
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -29,7 +29,8 @@ skill/        m2k-calendar skill（供 Claude 匯入）
 | `skill/SKILL.md` | m2k-calendar skill | — | ✅ |
 | `tests/group-book.test.mjs` | 使用者腳本離線測試（jsdom + 假伺服器） | — | ✅ 26 項全過（`npm test`） |
 | `tests/live_adb2_probe.js` | 通訊錄實機迴歸測試（瀏覽器 console 貼上） | 沿用瀏覽器登入 | ✅ 10 項斷言 |
-| `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ⚠ 需 `pip install caldav icalendar` 才跑得起來 |
+| `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ✅ 只需 `icalendar` |
+| `src/healthcheck.py` | 容器健康檢查（打真實 HTTP，分得出「活著但壞掉」） | — | ✅ 兩種狀態實測 |
 | `docs/m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — | — |
 
 ---
@@ -238,8 +239,9 @@ docker run -d -p 8763:8763 -v m2k-data:/data m2k-calendar \
    貼上 `tests/live_adb2_probe.js`，跑 `await adb2probe("<部門代碼>")`
    → 10 項斷言，驗「伺服器實際怎麼回應」：端點行為、`adbetype` 值域、分頁邊界、
    遞迴規模、chip 的 `data-id` 格式。可重複跑；輸出含真實通訊錄內容，外流前請斟酌。
-3. **行事曆離線單元測試**：`python3 tests/test_m2k.py`（需先 `pip install caldav icalendar`）
+3. **行事曆離線單元測試**：`python3 tests/test_m2k.py`（只需 `pip install icalendar`）
    → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、Basic 認證解析。
+   caldav 與 requests 都是延遲載入的，純函式測試用不到，所以 CI 不必裝整條依賴鏈。
 4. **MCP 煙霧測試**（免真帳密，需 `pip install "mcp[cli]" caldav icalendar requests`）：
    `python3 tests/smoke_mcp.py` → 自動啟動 server，驗證 stdio 與 HTTP 兩種模式的
    工具呼叫、無/壞 Authorization 拒絕、假憑證 pass-through、錯誤後 server 存活。

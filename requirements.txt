@@ -1,5 +1,6 @@
-mcp[cli]>=1.28
+mcp[cli]>=1.28,<2      # 2.x 移除了 mcp.server.fastmcp，會直接啟動失敗
 caldav>=1.4
 icalendar>=6.0
 requests>=2.31
 cryptography>=42
+anyio>=4              # _offload 用它把同步 tool 丟到 worker thread

@@ -51,9 +51,11 @@ issuer 必須是用戶端可達的 HTTPS 網址（claude.ai 的連線來自 Anth
 雲端，需公網可達）。
 """
 import argparse
+import functools
 import os
 import re
 import sys
+import threading
 import time
 import datetime as dt
 import uuid
@@ -112,7 +114,7 @@ def agenda(days: int = 7, calendar: str = "", ctx: Context = None) -> str:
         cal = _cal(_auth(ctx), calendar)
         start = dt.datetime.now()
         end = start + dt.timedelta(days=days)
-        events = cal.search(start=start, end=end, event=True, expand=True)
+        events = m2kcal.search_events(cal, start=start, end=end, event=True, expand=True)
         # 帶今天日期＋星期當時間錨點：模型換算「下週三」這類相對時間才不會偏移
         return (f"（今天 {start:%Y-%m-%d} 週{m2kcal._WK[start.weekday()]}）"
                 f"未來 {days} 天，共 {len(events)} 筆:\n"
@@ -129,7 +131,7 @@ def list_events(start: str, end: str, calendar: str = "",
         s = m2kcal.parse_when(start)
         e = m2kcal.parse_when(end)
         cal = _cal(_auth(ctx), calendar)
-        events = cal.search(start=s, end=e, event=True, expand=True)
+        events = m2kcal.search_events(cal, start=s, end=e, event=True, expand=True)
         return f"{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
     except m2kcal.M2KError as e:
         return f"錯誤：{e}"
@@ -138,7 +140,7 @@ def list_events(start: str, end: str, calendar: str = "",
 def _overlap_note(cal, s, e, exclude_uid=None) -> str:
     """檢查 [s, e) 是否與現有行程重疊，有則回傳警告文字（查詢失敗回空字串）。"""
     try:
-        rows = m2kcal.events_json(cal.search(start=s, end=e, event=True, expand=True))
+        rows = m2kcal.events_json(m2kcal.search_events(cal, start=s, end=e, event=True, expand=True))
     except Exception:
         return ""
     clash = [r for r in rows if r["uid"] != exclude_uid and not r["allday"]]
@@ -453,7 +455,7 @@ CAL_UI_URI = _cal_ui_uri()
 def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx) -> dict[str, Any]:
     auth = _auth(ctx) or m2kcal.creds()
     cal = _cal(auth)
-    events = cal.search(start=s, end=e, event=True, expand=True)
+    events = m2kcal.search_events(cal, start=s, end=e, event=True, expand=True)
     return {
         "range": {"start": s.strftime("%Y-%m-%d"), "end": e.strftime("%Y-%m-%d")},
         "today": dt.date.today().isoformat(),
@@ -531,16 +533,21 @@ def respond_event(uid: str, response: str, notify: bool = False,
 _CONTACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _CONTACTS_TTL = 900
 _CACHE_MAX_USERS = 300       # 快取淘汰：先清過期，仍超過就淘汰最舊（防長期記憶體累積）
+# tool 現在跑在 worker thread（見 _offload），快取成了共享可變狀態。
+# 單一 dict 讀寫在 CPython 是原子的，所以 .get()/[]= 不必鎖；
+# _cache_put 的「遍歷後刪除」是複合操作，會與其他 thread 打架，必須鎖。
+_CACHE_LOCK = threading.Lock()
 
 
 def _cache_put(cache: dict, key, value) -> None:
     now = time.time()
-    for k in [k for k, (ts, _) in cache.items() if now - ts >= _CONTACTS_TTL]:
-        del cache[k]
-    if len(cache) >= _CACHE_MAX_USERS:
-        for k in sorted(cache, key=lambda k: cache[k][0])[:len(cache) - _CACHE_MAX_USERS + 1]:
+    with _CACHE_LOCK:
+        for k in [k for k, (ts, _) in cache.items() if now - ts >= _CONTACTS_TTL]:
             del cache[k]
-    cache[key] = (now, value)
+        if len(cache) >= _CACHE_MAX_USERS:
+            for k in sorted(cache, key=lambda k: cache[k][0])[:len(cache) - _CACHE_MAX_USERS + 1]:
+                del cache[k]
+        cache[key] = (now, value)
 
 # 信件往來聯絡人池：一次抓最近信件的 header 建池、依使用者快取
 #（Mail2000 IMAP SEARCH 無索引，不能按查詢即時搜，見 imap_recent_contacts）
@@ -705,7 +712,7 @@ def search_events(keyword: str, start: str = "", end: str = "",
         seen, hits = set(), []
         for field in ("summary", "location", "description"):
             try:
-                found = cal.search(start=s, end=e, event=True, expand=True,
+                found = m2kcal.search_events(cal, start=s, end=e, event=True, expand=True,
                                    **{field: keyword})
             except Exception:
                 continue
@@ -884,6 +891,36 @@ def _transport_security(issuer: str | None, port: int):
     return TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
 
 
+def _offload(fn):
+    """把同步 tool 包成 async，真正的工作丟到 worker thread。
+
+    FastMCP 對同步函式是直接在事件循環裡呼叫的（已查證 mcp SDK 1.29.1：
+    func_metadata.call_fn_with_arg_validation 裡沒有 to_thread / run_sync），
+    所以一個慢請求就會卡住整台 server ——CalDAV 搜尋、首次 IMAP 建池
+    （一次抓兩個資料夾各 1500 封）動輒數秒到數十秒，共用部署時所有人一起等。
+
+    functools.wraps 會設 __wrapped__，FastMCP 靠 inspect.signature 產生參數
+    schema 與注入 Context，跟隨 __wrapped__ 後拿到的仍是原函式簽章。
+    代價：tool 之間變成真並行，共享可變狀態需自行保護（見 _CACHE_LOCK）。
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        import anyio
+
+        def call():
+            # 每次呼叫先清，避免沿用同一 worker thread 的上次殘留
+            m2kcal.clear_notes()
+            out = fn(*args, **kwargs)
+            notes = m2kcal.take_notes()
+            if notes and isinstance(out, str):
+                out += "\n\n⚠ 有資料被跳過，結果可能不完整：\n" + "\n".join(
+                    f"  - {x}" for x in notes)
+            return out
+
+        return await anyio.to_thread.run_sync(call)
+    return wrapper
+
+
 def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
     security = _transport_security(issuer, port or 8763)
     if oauth:
@@ -898,9 +935,9 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
     # 直接設定讓 initialize 的 serverInfo 顯示本服務版本
     server._mcp_server.version = __version__
     for f in TOOLS:
-        server.tool()(f)
+        server.tool()(_offload(f))
     for f in APP_TOOLS:
-        server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}})(f)
+        server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}})(_offload(f))
     _register_calendar_app(server)
     _register_prompts(server)
     if host:
