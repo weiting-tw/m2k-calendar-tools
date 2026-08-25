@@ -34,9 +34,9 @@ webmail 使用者腳本做群組排會議與多人看板。
   - CalDAV 家目錄**只含自己的日曆**（他人日曆不在其中）。
 - **通訊錄（adb2）**:同源、只靠 cookie。
   - 群組/部門展開：`/cgi-bin/adb2main_mds`(`command=list`,分頁參數 `pageno`)。
-  - 部門樹：`/cgi-bin/adb2tree_mds`(`command=expand`,需帶 `workingabid`)，路徑如 `/ORG_DIR1/UNIT1`。
+  - 部門樹：**不在** `adb2tree_mds`（那支只回幾個頂層目錄）。子部門與成員都在 `adb2main_mds` 列表的 `input[name=Entries]`:`adbetype="D"` 子部門、`adbetype="C"` 人（`email` 屬性）。
   - 人員搜尋：`/cgi-bin/adb2search_mds`(`command=mdssearch`)。
-  - **純郵件群組（distribution list，如 group_list_a@）無法展開**——成員在郵件伺服器端，通訊錄查不到。
+  - **純郵件群組（distribution list）無法展開**——成員在郵件伺服器端，通訊錄查不到。
 - **行事曆 feeds API（看多人/他人）**:`/cgi-bin/cal/calsrv/feeds/default/{default|subscribed/N|public/<id>}/events/instances/?starttime=&endtime=`(epoch 秒)。
   - 回傳 `{instances:[{summary,dtstart,dtend,organizer,attendee,...}]}`;同源、沿用登入。
   - 清單：`/cgi-bin/cal/calsrv/feeds/default/{type}/` → `{calendars:[{id,display_name,feeds,color,...}]}`。
@@ -59,14 +59,15 @@ webmail 使用者腳本做群組排會議與多人看板。
 
 ## 測試狀態
 - 離線單元測試 `python3 tests/test_m2k.py` → 30 項全過（ICS 產生/解析/TZID/時間解析/linkify/rrule/通訊錄解析）。
-- 真實環境：`cals`✓、`agenda` 讀取✓、`book` 建立（GET 驗證）✓、部門展開 UNIT1✓、autocomplete 資料✓、feeds 讀他人（colleague）事件✓、看板渲染✓。
+- 真實環境：`cals`✓、`agenda` 讀取✓、`book` 建立（GET 驗證）✓、autocomplete 資料✓、feeds 讀他人事件✓、看板渲染✓。
+- 通訊錄遞迴（`tests/live_adb2_probe.js`，實機 10 項斷言全過）:遞迴人數遠多於本層、請求數=部門數、超界頁會回捲、email 全小寫。
 - CLI `board` 用你真實資料開瀏覽器：功能已具備，建議再自行開一次確認畫面。
 
 ## 已知限制
 1. **book 會回 500 但實際成功** → 已用 GET 驗證繞過（非 bug，是 Mail2000 後端通知步驟）。
-2. **純郵件群組展不開**（group_list_a 這類）——資料源不開放，無解。
+2. **純郵件群組展不開**——資料源不開放，無解。
 3. **看他人行事曆需對方先分享**;無法用 email 臨時查完整內容（僅 free/busy 可跨查）。
-4. **多層部門**目前抓「該部門直接成員」;更深子部門需個別搜。
+4. **多層部門**已遞迴展開（本部門 + 所有子孫部門，跨部門去重）;每個部門一支請求，節點上限 300。搜部門時頂層沒中才搜整棵樹（部門多時要幾十秒，跑完快取）。
 5. **GIL 警告**:Python 3.13t + lxml 的環境警告，加 `PYTHON_GIL=0` 可消，無害。
 
 ## 待辦（TODO）
@@ -75,7 +76,7 @@ webmail 使用者腳本做群組排會議與多人看板。
 - [ ] 把兩支使用者腳本（群組排會議 + 多人看板）**合併成一支**、單一入口。
 - [ ] 群組 book 通知：展開成員後**逐一寄 .ics 邀請信**（或走原生排程流程）。
 - [ ] CLI 加 `delete` 指令清理測試/舊事件。
-- [ ] 多層部門**遞迴展開**子部門成員（會多打幾支請求）。
+- [x] 多層部門**遞迴展開**子部門成員（會多打幾支請求）。
 - [x] 把 CalDAV 查詢/book 包成 **MCP**(`m2k_mcp_server.py`)。
 - [x] 產出 **Skill**(`skill/SKILL.md`)。
 - [ ] （選）腳本內靜音 GIL 警告，免每次加 `PYTHON_GIL=0`。

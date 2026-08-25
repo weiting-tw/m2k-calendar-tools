@@ -25,8 +25,8 @@ GSS Mail2000 登入走 SAML SSO（/cgi-bin/saml_login），沒有帳密表單，
   參數   : command=list, workingabid=<通訊錄id>, workingdirid=<部門/群組id>,
            tofield=widget, m=<token>, ssnid=<token>
   分頁   : 每頁 25 筆，分頁參數 pageno（從 1 起算）
-  通訊錄 : GSS / ORG_ALL (公司)、ORG_DIR1 / ORG_DIR2 (部門樹)、個人通訊錄
-  欄位   : 暱稱、姓氏、名字、信箱、電話；email 格式 英文名_姓@gss.com.tw
+  通訊錄 : 公司通訊錄數本（含部門樹與全公司清單）、個人通訊錄
+  欄位   : 暱稱、姓氏、名字、信箱、電話
   (workingabid / workingdirid 可在通訊錄樹節點的 do_switchto(...) 參數取得)
 
 用法:

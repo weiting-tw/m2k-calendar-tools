@@ -21,13 +21,15 @@ skill/        m2k-calendar skill（供 Claude 匯入）
 
 | 檔案 | 用途 | 認證 | 狀態 |
 |---|---|---|---|
-| `userscripts/m2k-group-book.user.js` | **webmail 使用者腳本**：群組展開 + 批次加入與會者 | 沿用瀏覽器登入（同源、免 CORS、免 token） | ✅ 已對真實頁面實測 |
+| `userscripts/m2k-group-book.user.js` | **webmail 使用者腳本**：部門遞迴展開 + 批次加入與會者 | 沿用瀏覽器登入（同源、免 CORS、免 token） | ✅ 離線 26 項 + 實機 10 項斷言 |
 | `userscripts/m2k-multi-calendar-board.user.js` | webmail 使用者腳本：多人/他人行事曆合併看板 | 同上 | ✅ 資料流程+渲染實測 |
 | `src/m2kcal.py` | 行事曆 CLI：查詢 / book / 看板 / 加與會者 | CalDAV Basic（需應用程式密碼） | ✅ 真實環境驗證（讀+寫+看板） |
 | `src/m2kgroup.py` | 群組展開 CLI | 需帶瀏覽器 session token（SAML 限制） | ✅ 語法 + 離線測試通過 |
 | `src/m2k_mcp_server.py` | MCP server：讓 Claude 查行程/建會議 | 同 m2kcal（環境變數/.env） | ✅ 語法驗證 |
 | `skill/SKILL.md` | m2k-calendar skill | — | ✅ |
-| `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ✅ 30 項全過 |
+| `tests/group-book.test.mjs` | 使用者腳本離線測試（jsdom + 假伺服器） | — | ✅ 26 項全過（`npm test`） |
+| `tests/live_adb2_probe.js` | 通訊錄實機迴歸測試（瀏覽器 console 貼上） | 沿用瀏覽器登入 | ✅ 10 項斷言 |
+| `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ⚠ 需 `pip install caldav icalendar` 才跑得起來 |
 | `docs/m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — | — |
 
 ---
@@ -47,24 +49,25 @@ skill/        m2k-calendar skill（供 Claude 匯入）
 2. **A. 填會議資訊**：標題、日期、開始/結束時間、地點。
 3. **B. 加入與會者**（下拉切換）：
    - **搜姓名（autocomplete）**：邊打邊跳建議（中文 1 字、英文 2 字即觸發），點一下該人就加入，右側顯示「＋加入 / ✓已加」。
-   - **搜部門**：打部門代碼（如 `UNIT1`）→ 按「展開並加入」→ **自動抓齊該部門全部成員**逐一加入。
+   - **搜部門**：打部門代碼 → 按「展開全部並加入」→ **遞迴抓齊該部門與所有子部門的成員**逐一加入（跨部門自動去重）。只要本層的話按旁邊的「僅本層」。
    - 或展開「貼上 email」批次加入。
    - 面板即時顯示「目前與會者：N 人」。
 4. **C. 按「✅ 建立會議」**：自動填入原生表單、勾「寄送通知信」、跳出確認後儲存。
 
 **重要：群組信箱 vs 展開**
-- 直接打**群組信箱**（如 `group_list_b@example.com`）只是「一個收件者」,**不會展開**、底下成員收不到 —— 這是原本的問題。
-- 要展開成員，請用 **B → 搜部門**（如 UNIT1），它會列出該部門並把成員一個個加入，大家才收得到。
+- 直接打**群組信箱**只是「一個收件者」,**不會展開**、底下成員收不到 —— 這是原本的問題。
+- 要展開成員，請用 **B → 搜部門**，它會列出該部門並把成員一個個加入，大家才收得到。
 
 **原理（皆已實測）**
 - 搜人：`/cgi-bin/adb2search_mds`(`command=mdssearch`)，需帶通訊錄範圍（自動取得）。
-- 搜部門：`/cgi-bin/adb2tree_mds`(`command=expand`,需帶 `workingabid`) 取部門路徑（如 `/ORG_DIR1/UNIT1`），再用 `/cgi-bin/adb2main_mds`(`pageno` 分頁) 抓齊成員。
+- 搜部門：`/cgi-bin/adb2main_mds`(`command=list`,`pageno` 分頁) 讀 `input[name=Entries]`；`adbetype="D"` 是子部門（`value` 為完整路徑）、`adbetype="C"` 是人（`email` 屬性）。一支請求同時給「這層的人」與「這層的子部門」,所以遞迴邊走邊收即可。
+- 註：部門**不在** `/cgi-bin/adb2tree_mds` 的樹裡——那支不論參數只回幾個頂層目錄（已實測 10 種參數組合）;程式改為動態取那些目錄當遞迴起點。
 - 填表：標題/地點=文字欄；日期=jQuery datepicker `setDate`；時間=`HH:MM` 下拉；儲存鈕 `publishSettingOK`（實測填入正常）。
 - 全程同源、只靠瀏覽器登入 cookie、免 token、免 CORS。
-- 註：多層部門目前抓「該部門直接成員」;若成員在更下層子部門，改搜那個子部門代碼即可。
+- 每頁固定 25 筆,未滿即最後一頁,所以請求數約等於部門數。實機驗證見 `tests/live_adb2_probe.js`（數字會隨組織調整而變,不寫死在文件裡）。
 
 **限制：純郵件群組（distribution list）無法展開**
-像 `group_list_a@example.com` 這種只有「一個群組信箱」的郵件群組，成員名單存在郵件伺服器端，通訊錄與任何前端 API 都讀不到 —— 因此**無法自動拆成個別成員**（連原生 webmail 也看不到其成員）。能展開的只有「通訊錄裡看得到成員」的部門（ORG_DIR1 底下 16 個）與個人群組。若要邀請郵件群組的個別成員，需先向群組管理者/IT 取得名單，再用「貼上 email」批次加入。
+只有「一個群組信箱」的郵件群組（distribution list），成員名單存在郵件伺服器端，通訊錄與任何前端 API 都讀不到 —— 因此**無法自動拆成個別成員**（連原生 webmail 也看不到其成員）。能展開的只有「通訊錄裡看得到成員」的部門與個人群組。若要邀請郵件群組的個別成員，需先向群組管理者/IT 取得名單，再用「貼上 email」批次加入。
 
 **已驗證**：對真實排程表單實測——批次加入成員成功、忙碌狀態正常帶出、可正確移除；腳本不會自動存檔，一切以你按「儲存」為準。
 
@@ -169,7 +172,7 @@ pass-through 給 CalDAV：
 
 ```bash
 claude mcp add --transport http m2k-calendar https://主機:8763/mcp \
-  --header "Authorization: Basic $(printf '%s' '帳號@gss.com.tw:應用程式專用密碼' | base64)"
+  --header "Authorization: Basic $(printf '%s' '帳號@公司網域:應用程式專用密碼' | base64)"
 ```
 
 安全須知：
@@ -226,13 +229,26 @@ docker run -d -p 8763:8763 -v m2k-data:/data m2k-calendar \
 
 ## 功能測試怎麼做
 
-1. **離線單元測試**（最快、CI 友善、免帳密免套件）：`python3 tests/test_m2k.py`
-   → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、Basic 認證解析、成員解析。
-2. **MCP 煙霧測試**（免真帳密，需 `pip install "mcp[cli]" caldav icalendar requests`）：
+1. **使用者腳本離線測試**（最快、免帳密、免登入）：`npm install && npm test`
+   → 26 項，涵蓋通訊錄 `Entries` 解析、分頁截斷、部門遞迴（含環狀路徑與節點上限）、
+   加入與會者（去重／連續失敗中止／欄位隱藏）、HTML 跳脫、警告傳遞。
+   用 jsdom + 假伺服器，假伺服器的行為（每頁 25 筆、目錄排在成員前、超界頁回捲）
+   都取自實機驗證過的事實，不是憑空假設。
+2. **通訊錄實機迴歸測試**（需已登入的瀏覽器）：在 webmail 開 DevTools Console，
+   貼上 `tests/live_adb2_probe.js`，跑 `await adb2probe("<部門代碼>")`
+   → 10 項斷言，驗「伺服器實際怎麼回應」：端點行為、`adbetype` 值域、分頁邊界、
+   遞迴規模、chip 的 `data-id` 格式。可重複跑；輸出含真實通訊錄內容，外流前請斟酌。
+3. **行事曆離線單元測試**：`python3 tests/test_m2k.py`（需先 `pip install caldav icalendar`）
+   → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、Basic 認證解析。
+4. **MCP 煙霧測試**（免真帳密，需 `pip install "mcp[cli]" caldav icalendar requests`）：
    `python3 tests/smoke_mcp.py` → 自動啟動 server，驗證 stdio 與 HTTP 兩種模式的
    工具呼叫、無/壞 Authorization 拒絕、假憑證 pass-through、錯誤後 server 存活。
-3. **使用者腳本即時測試**：在「會議排程」頁展開一個小群組，看與會者是否正確加入（不要按儲存即無副作用）。
-4. **真實整合測試**：用測試行事曆 book 一筆給自己，確認收得到；再小範圍找一位同事驗證群組通知。
+5. **使用者腳本即時測試**：在「會議排程」頁開啟事件編輯、切到「與會者」頁籤，
+   展開一個小部門，看與會者是否正確加入（不要按儲存即無副作用）。
+6. **真實整合測試**：用測試行事曆 book 一筆給自己，確認收得到；再小範圍找一位同事驗證群組通知。
+
+> 測試分工是刻意的：離線測「拿到回應後我方邏輯怎麼處理」（尤其實機難觸發的錯誤分支），
+> 實機測「伺服器到底怎麼回應」。用猜的 mock 去測後者，只會測到自己的假設。
 
 ## 關鍵限制（務必知道）
 - **登入是 SAML SSO** → 獨立 CLI 無法自動登入通訊錄；群組功能最穩的是使用者腳本（沿用瀏覽器登入）。

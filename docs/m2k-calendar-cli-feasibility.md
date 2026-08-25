@@ -88,7 +88,7 @@ Allow: OPTIONS, GET, HEAD, DELETE, PROPFIND, PUT, PROPPATCH, COPY, MOVE, REPORT
 - 「需要自己按接受」則是**行事曆邀請的正常行為**，代表對方確認出席；除非有對方行事曆的委派寫入權（DAV header 雖有 `calendar-proxy` 委派能力，但要每個人先授權給你，不切實際），否則無法、也不該強制塞進別人行事曆為「已接受」。
 
 **好消息：群組展開做得到。** 公司通訊錄就在通訊錄模組裡：
-- 目錄：`個人通訊錄`、**`GSS`**、**`ORG_ALL`**（全公司）、`虛擬目錄`(Backend/Front/release…)
+- 目錄：個人通訊錄、公司通訊錄數本（含全公司清單）、`虛擬目錄`(Backend/Front/release…)
 - 展開群組成員的指令：通訊錄支援 **`command=showgroup`** 與 `command=list`（`/cgi-bin/adb2main` / `/cgi-bin/adb2search`，帶 `workingabid` 選通訊錄、`workingdirid`/群組 id、`m`、`ssnid`）
 - 也就是說：CLI 可以「輸入群組名稱 → 呼叫 showgroup 取得當下所有成員 email → 逐一帶進 book」。這正是你要的做法，且成員名單是**下單當下即時展開**，不會用到過期的固定名單。
 
@@ -119,7 +119,7 @@ Allow: OPTIONS, GET, HEAD, DELETE, PROPFIND, PUT, PROPPATCH, COPY, MOVE, REPORT
 
 也就是說：純 CLI 適合行事曆本身；「群組展開」這塊因為 SAML，最務實是做成**在已登入瀏覽器上跑的自動化（Claude in Chrome）或 MCP**，直接沿用你現在的登入狀態，不必解 SAML。
 
-**已實測成功（用你登入的瀏覽器）**：GSS → ORG_DIR2 部門直接列出成員，每筆含**姓名（中英）＋信箱＋分機**（email 格式 `英文名_姓@gss.com.tw`），有分頁（每頁 25 筆）。上方工具列的「加入與會者」按鈕證實這個選擇器正是行事曆加與會者用的。→ 群組展開技術上完全可行。
+**已實測成功（用你登入的瀏覽器）**：公司通訊錄的部門目錄可直接列出成員，每筆含**姓名（中英）＋信箱＋分機**，有分頁（每頁 25 筆）。上方工具列的「加入與會者」按鈕證實這個選擇器正是行事曆加與會者用的。→ 群組展開技術上完全可行。
 
 **已驗證的 adb2 展開規格**：
 
@@ -127,7 +127,7 @@ Allow: OPTIONS, GET, HEAD, DELETE, PROPFIND, PUT, PROPPATCH, COPY, MOVE, REPORT
 |---|---|
 | 端點 | `GET /cgi-bin/adb2main` |
 | 參數 | `command=list`、`workingabid`(通訊錄)、`workingdirid`(部門/群組)、`tofield=widget`、`m`、`ssnid` |
-| 通訊錄結構 | 公司：`GSS`→`ORG_DIR1`/`ORG_DIR2`(部門樹)、`ORG_ALL`(全公司)；個人：`個人通訊錄`+虛擬群組 |
+| 通訊錄結構 | 公司：公司通訊錄底下有數個頂層目錄(部門樹、全公司清單)；個人：`個人通訊錄`+虛擬群組 |
 | 每頁 | 25 筆，需翻頁 |
 | 搜尋 | `GET /cgi-bin/adb2search?querystring=<關鍵字>` |
 
