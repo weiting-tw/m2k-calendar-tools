@@ -29,6 +29,7 @@ skill/        m2k-calendar skill（供 Claude 匯入）
 | `skill/SKILL.md` | m2k-calendar skill | — | ✅ |
 | `tests/group-book.test.mjs` | 使用者腳本離線測試（jsdom + 假伺服器） | — | ✅ 26 項全過（`npm test`） |
 | `tests/live_adb2_probe.js` | 通訊錄實機迴歸測試（瀏覽器 console 貼上） | 沿用瀏覽器登入 | ✅ 10 項斷言 |
+| `tests/live_attendee_probe.js` | 加入與會者的延遲實測（需手動開好「與會者」頁籤） | 沿用瀏覽器登入 | ⏳ 待跑 |
 | `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ✅ 只需 `icalendar` |
 | `src/healthcheck.py` | 容器健康檢查（打真實 HTTP，分得出「活著但壞掉」） | — | ✅ 兩種狀態實測 |
 | `docs/m2k-calendar-cli-feasibility.md` | 完整技術分析報告 | — | — |
@@ -247,6 +248,10 @@ docker run -d -p 8763:8763 -v m2k-data:/data m2k-calendar \
    工具呼叫、無/壞 Authorization 拒絕、假憑證 pass-through、錯誤後 server 存活。
 5. **使用者腳本即時測試**：在「會議排程」頁開啟事件編輯、切到「與會者」頁籤，
    展開一個小部門，看與會者是否正確加入（不要按儲存即無副作用）。
+   要量加入延遲、驗 chip 的 `data-id` 格式，貼 `tests/live_attendee_probe.js`
+   後跑 `await attendeeProbe(["某人@公司網域"])`；測完會自動移除本次加入的人。
+   註：這一步無法自動化 —— 與會者欄位只在 Mail2000 自己開啟編輯畫面時才啟用，
+   從 console 合成滑鼠事件或強制顯示 DOM 都重現不出那個狀態。
 6. **真實整合測試**：用測試行事曆 book 一筆給自己，確認收得到；再小範圍找一位同事驗證群組通知。
 
 > 測試分工是刻意的：離線測「拿到回應後我方邏輯怎麼處理」（尤其實機難觸發的錯誤分支），
