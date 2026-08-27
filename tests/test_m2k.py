@@ -147,23 +147,66 @@ for bad in ("", "Bearer xyz", "Basic %%%",
 check("rrule 每週一三", m2kcal._rrule_text({"rrule": {"FREQ": ["WEEKLY"], "BYDAY": ["MO", "WE"]}}) == "每週 一三")
 check("rrule 無值空字串", m2kcal._rrule_text({}) == "")
 
-# 4) MemberParser: 模擬 adb2 通訊錄列表 HTML（結構仿實際:每列 td 姓名 + td 信箱）
+# 4) parse_entries: adb2 列表用 <input name="Entries"> 的屬性帶資料，
+#    adbetype 分辨部門(D)與人(C)。舊版靠掃 <td> 撈 email，拿不到部門也拿不到中文名。
 mock_html = """
 <table>
 <tr><td>類別</td><td>暱稱</td><td>信箱</td><td>電話</td></tr>
-<tr><td><input type=checkbox></td><td>User A (測試甲)</td><td>user_a@example.com</td><td>10001</td></tr>
-<tr><td><input type=checkbox></td><td>User B (測試乙)</td><td>user_b@example.com</td><td></td></tr>
-<tr><td><input type=checkbox></td><td>User C (測試丙)</td><td>user_c@example.com</td><td>10003</td></tr>
+<tr><td><input type=checkbox name="Entries" value="/org/unit-a" nick="unit-a" email="" adbetype="D"></td>
+    <td>unit-a</td></tr>
+<tr><td><input type=checkbox name="Entries" value="user_a@example.com" nick="User A (測試甲)"
+        email="User_A@Example.COM" adbetype="C"></td><td>10001</td></tr>
+<tr><td><input type=checkbox name="Entries" value="user_b@example.com" nick="User B (測試乙)"
+        email="user_b@example.com" adbetype="C"></td><td></td></tr>
+<tr><td><input type=checkbox name="NotEntries" value="ignored@example.com"
+        email="ignored@example.com" adbetype="C"></td><td>—</td></tr>
 </table>
 """
-p = m2kgroup.MemberParser()
-p.feed(mock_html)
-emails = [e for _, e in p.rows]
-names = [n for n, _ in p.rows]
-check("解析出 3 位成員", len(p.rows) == 3)
-check("email 正確", emails == ["user_a@example.com", "user_b@example.com", "user_c@example.com"])
-check("姓名帶出", "User A (測試甲)" in names)
-check("表頭列不被當成員", "信箱" not in "".join(emails))
+rows = m2kgroup.parse_entries(mock_html)
+check("解析出 3 列（含 1 個部門、2 位人員）", len(rows) == 3)
+dirs = [r for r in rows if r["type"] == "D"]
+people = [r for r in rows if r["type"] == "C"]
+check("部門有完整路徑", len(dirs) == 1 and dirs[0]["value"] == "/org/unit-a")
+check("人員 email 一律小寫", [r["email"] for r in people]
+      == ["user_a@example.com", "user_b@example.com"])
+check("nick 帶出中文名", "User A (測試甲)" in [r["nick"] for r in people])
+check("表頭與非 Entries 欄位不被當成資料",
+      all("ignored" not in r["email"] and "信箱" not in r["nick"] for r in rows))
+
+# 5) fetch_node / expand: 用假伺服器驗分頁與遞迴（不連真站）
+_pages = {
+    "/org/a": [
+        [{"value": "/org/a/b", "nick": "b", "email": "", "type": "D"},
+         {"value": "x@example.com", "nick": "X", "email": "x@example.com", "type": "C"}],
+    ],
+    "/org/a/b": [
+        [{"value": "y@example.com", "nick": "Y", "email": "y@example.com", "type": "C"},
+         {"value": "x@example.com", "nick": "X", "email": "x@example.com", "type": "C"}],
+    ],
+}
+
+
+def _fake_page(_s, _abid, dirid, page):
+    rows = _pages.get(dirid, [[]])
+    chunk = rows[page - 1] if page <= len(rows) else []
+    return "".join(
+        f'<input name="Entries" value="{r["value"]}" nick="{r["nick"]}" '
+        f'email="{r["email"]}" adbetype="{r["type"]}">' for r in chunk)
+
+
+_real_page, _real_session = m2kgroup.fetch_page, m2kgroup.session
+m2kgroup.fetch_page = _fake_page
+m2kgroup.session = lambda: None
+try:
+    members, nodes = m2kgroup.expand("BOOK1", "/org/a", recursive=True)
+    got = sorted(e for _, e in members)
+    check("遞迴含子部門且跨部門去重", got == ["x@example.com", "y@example.com"])
+    check("遞迴走過兩個部門", nodes == 2)
+    members1, nodes1 = m2kgroup.expand("BOOK1", "/org/a", recursive=False)
+    check("--no-recursive 只取本層", [e for _, e in members1] == ["x@example.com"])
+    check("--no-recursive 只走一個部門", nodes1 == 1)
+finally:
+    m2kgroup.fetch_page, m2kgroup.session = _real_page, _real_session
 
 # 5) update_event_ics: 只動指定欄位、其餘保留；SEQUENCE +1
 src_ics = m2kcal.build_ics("原標題", s, e, location="3F",

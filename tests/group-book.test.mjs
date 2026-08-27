@@ -70,8 +70,11 @@ function setVisible(el, visible) {
   Object.defineProperty(el, "offsetParent", { get: () => (visible ? dom.window.document.body : null), configurable: true });
 }
 
+let confirmCalls;
 beforeEach(() => {
   setupDom();
+  confirmCalls = [];
+  global.confirm = (msg) => { confirmCalls.push(msg); return true; };   // 預設同意
   realSetTimeout = global.setTimeout;
   delete require.cache[SCRIPT];
   gb = require(SCRIPT);
@@ -339,6 +342,61 @@ describe("addOne / addMany — 加入與會者", () => {
     const ok = await gb.addMany(todo, (m) => logs.push(m));
     assert.ok(ok >= 3, `只成功 ${ok} 位`);
     assert.doesNotMatch(logs.join("\n"), /中止/);
+  });
+});
+
+describe("addMany — 大批加入前的規模確認", () => {
+  const list = () => dom.window.document.querySelector(".scheduleAttendeeList");
+  const input = () => dom.window.document.querySelector(".scheduleAttendeeInput");
+  const wire = () => {
+    const inp = input();
+    setVisible(inp, true);
+    inp.addEventListener("keyup", () => {
+      const v = inp.value;
+      if (v) global.setTimeout(() => {
+        const chip = dom.window.document.createElement("div");
+        chip.className = "scheduleAttendee";
+        chip.setAttribute("data-id", v.toLowerCase());
+        list().appendChild(chip);
+      }, 1);
+    });
+  };
+  const many = (n) => Array.from({ length: n }, (_, i) => `p${i}@example.test`);
+
+  test("人數在門檻內不打擾使用者", async () => {
+    speedUpTimers(); wire();
+    await gb.addMany(many(5), () => {});
+    assert.equal(confirmCalls.length, 0);
+  });
+
+  test("超過門檻會先問，訊息要有人數與預估時間", async () => {
+    speedUpTimers(); wire();
+    await gb.addMany(many(gb.BIG_ADD + 1), () => {});
+    assert.equal(confirmCalls.length, 1);
+    assert.match(confirmCalls[0], new RegExp(String(gb.BIG_ADD + 1)));
+    assert.match(confirmCalls[0], /分|秒/);
+  });
+
+  test("按取消就不加人，改把名單印出來給使用者複製", async () => {
+    speedUpTimers(); wire();
+    global.confirm = (msg) => { confirmCalls.push(msg); return false; };
+    const logs = [];
+    const todo = many(gb.BIG_ADD + 3);
+    const ok = await gb.addMany(todo, (m) => logs.push(m));
+    assert.equal(ok, 0);
+    assert.equal(gb.existing().size, 0, "取消就不該加任何人");
+    const text = logs.join("\n");
+    assert.match(text, /只列名單/);
+    assert.ok(text.includes(todo[0]) && text.includes(todo[todo.length - 1]),
+      "名單要完整印出，否則使用者複製不到");
+  });
+
+  test("門檻是看去重後的實際待加人數", async () => {
+    speedUpTimers(); wire();
+    // 同一個人重複 300 次，實際只要加 1 位 → 不該問
+    await gb.addMany(Array(gb.BIG_ADD + 100).fill("dup@example.test"), () => {});
+    assert.equal(confirmCalls.length, 0);
+    assert.equal(gb.existing().size, 1);
   });
 });
 

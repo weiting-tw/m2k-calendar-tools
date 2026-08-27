@@ -51,6 +51,21 @@
     inp.value = "";
     return false;   // 等滿 2 秒它都沒出現，這時的「失敗」才是可信的
   }
+  // 逐一加入是序列的、中途無法取消，人數一多就是好幾分鐘，而原生表單能吃多少
+  // 與會者也未知。所以超過門檻先問一聲，並給「只看名單」的出口。
+  function confirmScale(n, log) {
+    if (n <= BIG_ADD) return true;
+    const secs = Math.ceil(n * 0.6);   // 每人約 0.5–1 秒（含 widget 回應）
+    const mins = Math.floor(secs / 60), rest = secs % 60;
+    const eta = mins ? `${mins} 分 ${rest} 秒` : `${secs} 秒`;
+    const ok = confirm(
+      `要一次加入 ${n} 位與會者。\n\n` +
+      `預估耗時約 ${eta}，過程中無法取消，且原生表單對與會者人數的上限未知。\n\n` +
+      `按「確定」開始加入；按「取消」則只把名單印在下方 log（可自行複製）。`);
+    if (!ok) log("已取消加入，只列名單。");
+    return ok;
+  }
+
   async function addMany(emails, log) {
     // 先確認欄位真的可用，否則每個人都會白等一輪 timeout 才失敗
     try { attendeeInput(); } catch (err) { log("✗ " + err.message); return 0; }
@@ -60,6 +75,10 @@
       if (k && !have.has(k) && !picked.has(k)) { picked.add(k); todo.push(e); }
     });
     if (!todo.length) { log("沒有新成員可加入（可能都已在名單）。"); return 0; }
+    if (!confirmScale(todo.length, log)) {
+      log(todo.join(", "));   // 印出來讓使用者自己複製
+      return 0;
+    }
     log(`加入 ${todo.length} 位…`);
     let ok = 0, streak = 0; const failed = [];
     for (let i = 0; i < todo.length; i++) {
@@ -124,6 +143,7 @@
   //   adbetype="C" → 人（email 屬性是信箱、nick 是「英文名 (中文名)」）
   // 一支請求同時給「這層的人」和「這層的子部門」，所以遞迴不必另外建樹。
   let GSSABID = "", ROOTS = null, TOPDEPTS = null, ALLDEPTS = null;
+  const BIG_ADD = 200;      // 超過這麼多人就先問一聲（逐一加入很久且中途無法取消）
   const PAGE_SIZE = 25;     // adb2main_mds 每頁固定 25 筆，未滿即最後一頁
   const MAX_PAGES = 40;     // 單一部門的分頁上限；成員多的部門會用到大半
   const MAX_NODES = 300;    // 遞迴節點上限
@@ -407,7 +427,7 @@
       esc, existing, attendeeInput, addOne, addMany,
       fetchRows, fetchNode, fetchSubs, loadDepts, loadDeptsAll, collectSubtree,
       NOTES, flushNotes,
-      rootDirs, PAGE_SIZE, MAX_PAGES, MAX_NODES, ADD_TIMEOUT_MS, ADD_POLL_MS, MAX_FAIL_STREAK,
+      rootDirs, BIG_ADD, PAGE_SIZE, MAX_PAGES, MAX_NODES, ADD_TIMEOUT_MS, ADD_POLL_MS, MAX_FAIL_STREAK,
       _reset: () => { GSSABID = ""; ROOTS = null; TOPDEPTS = null; ALLDEPTS = null; SCOPE = null; NOTES.length = 0; },
       _abid: () => GSSABID,
     };

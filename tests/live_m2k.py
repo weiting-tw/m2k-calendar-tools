@@ -212,8 +212,44 @@ def _cleanup():
             print(f"掃蕩刪除: {summ}")
 
 
+@step("解析健全性（唯讀）：真實事件不該觸發任何「跳過」警告")
+def t_parse_health():
+    """這是 m2kcal 那些 HTML/ICS 解析的實機迴歸偵測。
+
+    工具建立在非官方協定細節上，Mail2000 一改版，解析就會開始靜默跳過資料 ——
+    使用者看到的是「行程少了幾筆」而不是錯誤。m2kcal.note() 會記下每次跳過，
+    所以拿真實資料跑一遍、檢查 notes 是否為空，就是最直接的退化偵測。
+    純讀取：不建立、不修改、不刪除任何東西。
+    """
+    m2kcal.clear_notes()
+    auth = m2kcal.creds()
+    cal = srv._cal(auth)
+    now = dt.datetime.now()
+    events = m2kcal.search_events(cal, start=now - dt.timedelta(days=30),
+                                  end=now + dt.timedelta(days=30),
+                                  event=True, expand=True)
+    rows = m2kcal.events_json(events)
+    assert rows, "近 60 天讀不到任何事件——無法判斷解析是否健康（請確認帳號有資料）"
+
+    # 欄位健全性：解析壞掉時最常見的症狀是欄位變空
+    no_title = [r for r in rows if not (r.get("summary") or "").strip()]
+    no_start = [r for r in rows if not r.get("start")]
+    assert not no_title, f"{len(no_title)}/{len(rows)} 筆沒有標題，解析可能退化"
+    assert not no_start, f"{len(no_start)}/{len(rows)} 筆沒有開始時間，解析可能退化"
+
+    # 與會者欄位若解析失敗，collect_contacts 會靜默跳過 → 由 notes 抓
+    contacts = m2kcal.collect_contacts(cal)
+    bad_email = [e for e in contacts if "@" not in e]
+    assert not bad_email, f"聯絡人裡有不像 email 的鍵：{bad_email[:3]}"
+
+    notes = m2kcal.take_notes()
+    assert not notes, "解析過程跳過了資料（這就是退化訊號）：" + "; ".join(notes)
+    return f"{len(rows)} 筆事件、{len(contacts)} 位聯絡人，零跳過"
+
+
 if __name__ == "__main__":
-    steps = [t_multiline_desc, t_all_day, t_rrule, t_reminder,
+    steps = [t_parse_health,
+             t_multiline_desc, t_all_day, t_rrule, t_reminder,
              t_get_event, t_calendar_param, t_freebusy_others,
              t_split_series, t_invitations]
     try:
