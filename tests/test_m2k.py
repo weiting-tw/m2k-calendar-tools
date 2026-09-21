@@ -571,7 +571,7 @@ try:
 finally:
     m2kcal._sched_get = _orig_get
 
-# 20) find_free_slots 帶 attendees：明講此站台不支援，且完全不連線
+# 20) find_free_slots 帶 attendees 但沒 Cookie：退到「已分享行事曆」，並明講怎麼提供 Cookie
 # 需要 mcp 套件才 import 得動 server（它缺套件時會直接 sys.exit，所以先探 mcp 本身）；
 # CI 只裝 icalendar，沒有就明講略過，不假裝通過
 import importlib.util
@@ -581,21 +581,28 @@ if importlib.util.find_spec("mcp") is None:
 else:
     import m2k_mcp_server as srv
 if srv:
-    def _no_network(*a, **kw):
-        raise AssertionError("find_free_slots 帶 attendees 時不該連線")
-
-    _orig = m2kcal.connect, m2kcal.creds
-    _saved_ck = os.environ.pop("M2K_COOKIE", None)   # .env 可能真的有 cookie，這段要測「沒有」
-    m2kcal.connect, m2kcal.creds = _no_network, _no_network
+    class _FakeFB0:
+        data = "BEGIN:VFREEBUSY\r\nEND:VFREEBUSY\r\n"
+    class _FakeCal0:
+        def freebusy_request(self, s, e): return _FakeFB0()
+    _orig = (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, m2kcal.busy_from_shared,
+             m2kcal.fetch_schedule, os.environ.pop("M2K_COOKIE", None))   # .env 可能真的有 cookie，這段要測「沒有」
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _FakeCal0()
+    m2kcal.creds = lambda: ("u", "user", "pw")
+    m2kcal.busy_from_shared = lambda p, emails, s, e: ([(dt.datetime(2026, 9, 21, 9), dt.datetime(2026, 9, 21, 12))], ["nobody@example.com"])
+    def _no_sched(*a, **k): raise AssertionError("沒 Cookie 不該打排程端點")
+    m2kcal.fetch_schedule = _no_sched
     try:
-        fs = srv.find_free_slots(duration_minutes=30, days=3,
-                                 attendees=["someone@example.com"])
+        fs = srv.find_free_slots(duration_minutes=60, start="2026-09-21", days=1,
+                                 attendees=["shared@example.com", "nobody@example.com"])
     finally:
-        m2kcal.connect, m2kcal.creds = _orig
-        if _saved_ck is not None: os.environ["M2K_COOKIE"] = _saved_ck
-    check("find_free_slots 帶 attendees 但沒 Cookie → 回錯誤且說明怎麼提供 Cookie",
-          fs.startswith("錯誤：") and "M2K_COOKIE" in fs and "X-M2K-Cookie" in fs)
-    check("find_free_slots 沒 Cookie 也指向 webmail 使用者腳本", "m2k 助手" in fs)
+        m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, m2kcal.busy_from_shared, m2kcal.fetch_schedule = _orig[:5]
+        if _orig[5] is not None: os.environ["M2K_COOKIE"] = _orig[5]
+    check("find_free_slots 沒 Cookie → 改讀已分享行事曆並說明（提到 Cookie 與 others_agenda）",
+          "沒有 webmail Cookie" in fs and "others_agenda" in fs)
+    check("find_free_slots 沒 Cookie → 列出未分享者、已分享者的忙碌有扣掉（09–12 忙，12:00 起有空）",
+          "nobody@example.com" in fs and "\n   12:00–" in fs and "\n   09:00–" not in fs)
 
 # 22) MCP others_agenda / find_free_slots 帶 attendees：有 Cookie 時走排程端點（假的 fetch）
 if srv:
@@ -646,5 +653,93 @@ if srv:
         check("others_agenda 沒 Cookie → 說明怎麼提供", "M2K_COOKIE" in srv.others_agenda(["a@example.com"]))
     finally:
         if _saved is not None: os.environ["M2K_COOKIE"] = _saved
+
+# 23) person_calendar：需要 caldav 套件（CI 只裝 icalendar，沒有就明講略過）
+if importlib.util.find_spec("caldav") is None:
+    print("SKIP person_calendar（缺 caldav 套件）")
+else:
+    import caldav
+    _pc_client = caldav.DAVClient(url="https://mail.gss.com.tw/cgi-bin/cal/caldav/")
+    class _FakeP:
+        client = _pc_client
+    _pcal = m2kcal.person_calendar(_FakeP(), "colleague@example.com")
+    check("person_calendar 指向 <email>/default/",
+          str(_pcal.url).endswith("/calendars/colleague@example.com/default/"))
+
+# 24) collect_meeting_groups / match_groups：同標題聚合 + 模糊比對（用虛構名稱）
+g1 = m2kcal.build_ics("TEAM_A1 Standup", dt.datetime(2026, 8, 1, 10, 0),
+                      dt.datetime(2026, 8, 1, 10, 30),
+                      attendees=["a@x.com", "b@x.com"], organizer="lead@x.com",
+                      uid="G1", stamp="Z")
+g2 = m2kcal.build_ics("TEAM_A1 Standup", dt.datetime(2026, 8, 8, 10, 0),
+                      dt.datetime(2026, 8, 8, 10, 30),
+                      attendees=["a@x.com", "c@x.com"], organizer="lead@x.com",
+                      uid="G2", stamp="Z")
+g3 = m2kcal.build_ics("別的會", dt.datetime(2026, 8, 2, 14, 0),
+                      dt.datetime(2026, 8, 2, 15, 0),
+                      attendees=["d@x.com"], uid="G3", stamp="Z")
+class _FakeCal:
+    def search(self, **kw):
+        return [_fake(g1), _fake(g2), _fake(g3)]
+grps = m2kcal.collect_meeting_groups(_FakeCal())
+check("群組：同標題聚合成一筆",
+      len([g for g in grps if g["title"] == "TEAM_A1 Standup"]) == 1)
+_csg = next(g for g in grps if g["title"] == "TEAM_A1 Standup")
+check("群組：count 累加", _csg["count"] == 2)
+check("群組：名單取最近一次（含 organizer、去重）",
+      set(_csg["attendees"]) == {"a@x.com", "c@x.com", "lead@x.com"})
+check("match_groups 模糊命中（team_a1 → TEAM_A1 Standup）",
+      bool(m2kcal.match_groups(grps, "team_a1"))
+      and m2kcal.match_groups(grps, "team_a1")[0]["title"] == "TEAM_A1 Standup")
+check("match_groups 查無回空", m2kcal.match_groups(grps, "zzz") == [])
+
+# 25) match_directory_groups：部門名模糊比對（正規化去底線/空白；用虛構名稱）
+_dirg = [{"name": "ENG_A1_GRP", "path": "/ORG/ENG/ENG_A1_GRP", "href": "/h1"},
+         {"name": "ENG_A2_GRP", "path": "/ORG/ENG/ENG_A2_GRP", "href": "/h2"},
+         {"name": "SALES", "path": "/ORG/SALES", "href": "/h3"}]
+check("match_directory 命中（eng a1 → ENG_A1_GRP）",
+      [g["name"] for g in m2kcal.match_directory_groups(_dirg, "eng a1")] == ["ENG_A1_GRP"])
+check("match_directory 前綴命中多筆（eng_a → 兩個部門）",
+      len(m2kcal.match_directory_groups(_dirg, "eng_a")) == 2)
+check("match_directory 查無回空", m2kcal.match_directory_groups(_dirg, "zzz") == [])
+
+check("group_mailbox 部門名轉小寫＋使用者網域",
+      m2kcal.group_mailbox("ENG_A1_GRP", "me@example.com") == "eng_a1_grp@example.com")
+check("group_mailbox 去空白", m2kcal.group_mailbox("  ENG_A1  ", "me@example.com")
+      == "eng_a1@example.com")
+check("group_mailbox 無網域回空", m2kcal.group_mailbox("ENG_A1", "nodomain") == "")
+
+# 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
+_sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
+                             dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")
+_sh_allday = m2kcal.build_ics("休假", dt.datetime(2026, 8, 4), dt.datetime(2026, 8, 5),
+                              uid="S2", stamp="Z", all_day=True)
+class _FakeSharedCal:
+    def search(self, **kw):
+        return [_fake(_sh_timed), _fake(_sh_allday)]
+_orig_pc = m2kcal.person_calendar
+def _fake_pc(principal, email):
+    if email == "noshare@x.com":
+        raise RuntimeError("404 Not Found")   # 未分享
+    return _FakeSharedCal()
+m2kcal.person_calendar = _fake_pc
+try:
+    _busy, _missing = m2kcal.busy_from_shared(
+        None, ["a@x.com", "noshare@x.com"],
+        dt.datetime(2026, 8, 1), dt.datetime(2026, 8, 8))
+finally:
+    m2kcal.person_calendar = _orig_pc
+check("busy_from_shared 未分享列入 missing", _missing == ["noshare@x.com"])
+check("busy_from_shared 一般事件成為忙碌區間",
+      (dt.datetime(2026, 8, 3, 10, 0), dt.datetime(2026, 8, 3, 11, 0)) in _busy)
+check("busy_from_shared 全天＝整天忙碌",
+      (dt.datetime(2026, 8, 4, 0, 0), dt.datetime(2026, 8, 5, 0, 0)) in _busy)
+# 併入 free_slots：8/3 10-11 被扣掉、8/4 整天無空檔
+_slots = m2kcal.free_slots(_busy, dt.datetime(2026, 8, 3), dt.datetime(2026, 8, 5), 60)
+check("free_slots 扣掉分享日曆的忙碌時段",
+      all(not (a < dt.datetime(2026, 8, 3, 11) and b > dt.datetime(2026, 8, 3, 10))
+          for a, b in _slots))
+check("free_slots 全天忙碌日無空檔",
+      all(a.date() != dt.date(2026, 8, 4) for a, b in _slots))
 
 print("\n全部通過 ✅")

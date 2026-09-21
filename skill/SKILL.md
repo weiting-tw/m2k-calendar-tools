@@ -15,10 +15,12 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 使用者想做 | 用什麼 |
 |---|---|
 | 查自己行程 / 建會議 / 改會議 / 刪會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `delete_event` / `list_calendars` |
+| 查同事分享給你的行事曆（「bear 這週有什麼會」） | `agenda` / `list_events` 帶 `person`（模糊名字或完整 email；對方需先在 webmail 分享，未分享會回提示） |
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
 | 找空檔（「明天哪裡有空 1 小時」「找我跟 A、B 都有空的時間」） | MCP 工具：`find_free_slots`（帶 `attendees` 需 webmail Cookie，見下） |
 | 看同事的行程（「pekka 下週有什麼會」） | MCP 工具：`others_agenda`（需 webmail Cookie；沒有時會回說明，可改用 webmail 腳本） |
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
+| 模糊群組名展開成員排會議（「約某某部門開會」） | MCP 工具：`find_group`（優先讀公司通訊錄的**正式部門群組**——CardDAV，用應用程式專用密碼即可；查無部門才退回你參與過的定期會議。多候選/名單要向使用者確認後再 book） |
 | 建重複會議 / 加提醒 | `book` 的 `repeat`（daily/weekly/monthly）+ `repeat_until`、`reminder_minutes` |
 | 互動行事曆畫面（週/月檢視、UI 上直接增改刪、拖曳改時間） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI；agenda/list_events/book/update_event/respond_event/delete_event 也會帶出同一個畫面） |
 | 回覆會議邀請（接受/暫定/拒絕，只改自己日曆） | MCP 工具：`respond_event` |
@@ -46,7 +48,8 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 提供工具 `list_calendars` / `agenda` / `list_events` / `book` / `update_event`
 （修改既有會議：標題/時間/地點/描述/增減與會者，uid 取自查詢輸出的 `id:` 欄位）；
 設定範例見 README「四、MCP server」。
-只能操作自己的日曆（他人日曆需 webmail session，MCP 拿不到）。
+建立/修改/刪除只作用於自己的日曆；查詢除自己外，也能看同事「已分享給你」的
+日曆（`agenda`/`list_events` 帶 `person`，走 CalDAV，未分享則讀不到）。
 三種模式：stdio（本機、環境變數憑證，預設）、`--http`（公用部署，每請求帶
 `Authorization: Basic`）、`--oauth`（claude.ai Connectors／手機 app，OAuth 2.1 +
 無狀態加密 token）。後兩者伺服器都不保存帳密。
@@ -66,4 +69,13 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 
 - 純郵件群組（distribution list，如 xxx@example.com）無法展開成員（資料源不開放）。
 - 看同事行程（`others_agenda`、`find_free_slots` 帶 attendees）走 webmail 排程端點，需要使用者提供 webmail Cookie（stdio：`M2K_COOKIE`；HTTP：`X-M2K-Cookie`；OAuth：登入頁貼上）。工具回「需要 webmail Cookie」時，照它的說明請使用者提供，或改用 webmail 使用者腳本。Cookie 短效，回「無效或已過期」就請使用者重貼。
+- `find_group` 優先用 CardDAV 讀公司通訊錄的正式部門群組（應用程式專用密碼即可，需部署設
+  `M2K_ADBID`）；未設或查無部門時退回「你參與過的定期會議與會者」（名單可能略舊，book 前
+  讓使用者確認）。
+- 群組信箱（部門名小寫@網域）只是**一個收件位址、不會展開成員**；要每人收到邀請並能回覆出席，
+  必須把個別成員放進 attendees。`find_group` 會一併列出群組信箱並標註是否確實存在，可
+  「群組信箱＋個別成員」一起帶入。純郵件群組（distribution list）本身仍無法展開成員。
+- 看同事行程有兩條路：對方**已分享給你**的，`agenda`/`list_events` 帶 `person` 走 CalDAV 即可、
+  不需 Cookie；**任何人**（含未分享）用 `others_agenda`，需 webmail Cookie。`find_free_slots` 帶
+  `attendees` 時有 Cookie 就查所有人，沒 Cookie 只算已分享者並列出未納入的人——務必轉達這份名單。
 - 使用者腳本必須裝在 webmail（Tampermonkey），且新版 Chrome 需開「允許使用者指令碼」。

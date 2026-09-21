@@ -50,6 +50,12 @@ def _caldav():
         raise M2KError("需要 caldav 套件，請先執行:  pip install caldav icalendar")
     return caldav
 
+
+def _not_found_error():
+    """caldav 的 NotFoundError 類別（延遲載入，理由同 _caldav）。"""
+    from caldav.lib import error as caldav_error
+    return caldav_error.NotFoundError
+
 DEFAULT_URL = "https://mail.gss.com.tw/cgi-bin/cal/caldav/"
 
 
@@ -198,6 +204,16 @@ def cal_name(c):
             return c.name
         except Exception:
             return str(c)
+
+
+def person_calendar(principal, email):
+    """回傳指向某位同事（已把行事曆分享給你）default 日曆的 Calendar 物件。
+    email 需完整帳號。CalDAV 的 principal.calendars() 只列自己 home 下的
+    日曆、分享來的不在清單，故直接以 URL 存取；未分享/不存在時後續
+    search 會丟 NotFoundError（404）。"""
+    base = os.environ.get("M2K_URL", DEFAULT_URL).rstrip("/")
+    return _caldav().Calendar(client=principal.client,
+                           url=f"{base}/calendars/{email}/default/")
 
 
 def pick_calendar(principal, name=None):
@@ -606,23 +622,54 @@ def cmd_board(args):
             pass
 
 
+def _cli_calendar(args, p):
+    """CLI：依 --person 選日曆。回 (Calendar, 顯示標籤)。
+    --person 給模糊名字（fuzzy，來源為自己行事曆的往來對象）或完整 email；
+    無此參數則查自己。解析失敗/未分享時印訊息並結束。"""
+    person = (getattr(args, "person", "") or "").strip()
+    if not person:
+        cal = pick_calendar(p, args.calendar)
+        return cal, cal_name(cal)
+    if "@" in person:
+        email = person.lower()
+    else:
+        matches = match_contacts(collect_contacts(pick_calendar(p)), person)
+        if len(matches) != 1:
+            if matches:
+                print(f"「{person}」有多個候選，請改用完整 email：")
+                for _s, em, rec in matches[:8]:
+                    print(f"  - {rec['name'] or em.split('@')[0]} <{em}>")
+            else:
+                print(f"找不到「{person}」，請確認名字或改用完整 email。")
+            sys.exit(1)
+        email = matches[0][1]
+    cal = person_calendar(p, email)
+    try:  # 未分享→404
+        cal.search(start=dt.datetime.now(), end=dt.datetime.now() + dt.timedelta(days=1),
+                   event=True, expand=True)
+    except _not_found_error():
+        print(f"找到 {email}，但讀不到對方行事曆（可能未分享給你，或帳號不存在）。")
+        sys.exit(1)
+    return cal, email
+
+
 def cmd_list(args):
     p = connect()
-    cal = pick_calendar(p, args.calendar)
+    cal, label = _cli_calendar(args, p)
     start = parse_when(args.start)
     end = parse_when(args.end)
     events = cal.search(start=start, end=end, event=True, expand=True)
-    print(f"[{cal_name(cal)}] {args.start} ~ {args.end}，共 {len(events)} 筆:")
+    print(f"[{label}] {args.start} ~ {args.end}，共 {len(events)} 筆:")
     print(render_grouped(events))
 
 
 def cmd_agenda(args):
     p = connect()
-    cal = pick_calendar(p, args.calendar)
+    cal, label = _cli_calendar(args, p)
     start = dt.datetime.now()
     end = start + dt.timedelta(days=args.days)
     events = cal.search(start=start, end=end, event=True, expand=True)
-    print(f"[{cal_name(cal)}] 未來 {args.days} 天，共 {len(events)} 筆:")
+    print(f"[{label}] 未來 {args.days} 天，共 {len(events)} 筆:")
     print(render_grouped(events))
 
 
@@ -807,6 +854,167 @@ def collect_contacts(cal, start=None, end=None):
             if when > rec["last"]:
                 rec["last"] = when
     return out
+
+
+def collect_meeting_groups(cal, start=None, end=None):
+    """把行事曆裡『同標題的會議』聚成候選群組，回 list（依出現次數排序）：
+    每個 {title, attendees:[email], names:{email:name}, count, last, organizer}。
+    公司通訊錄的部門群組 MCP 拿不到（需 webmail session），這裡改用你自己
+    定期會議的與會者名單當群組來源。attendees 取『最近一次出現』那場的名單
+    （最貼近現況）；organizer 也併入 attendees。"""
+    start = start or dt.datetime.now() - dt.timedelta(days=180)
+    end = end or dt.datetime.now() + dt.timedelta(days=90)
+    groups = {}
+    for ev in cal.search(start=start, end=end, event=True, expand=True):
+        c = ev.icalendar_component
+        title = str(c.get("summary", "")).strip()
+        if not title:
+            continue
+        when = ""
+        try:
+            when = c.get("dtstart").dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        people = []
+        a = c.get("attendee")
+        if a:
+            people += [_addr(x) for x in (a if isinstance(a, list) else [a])]
+        org = c.get("organizer")
+        if org:
+            people.append(_addr(org))
+        rec = groups.setdefault(title, {"title": title, "count": 0, "last": "",
+                                        "attendees": [], "names": {},
+                                        "organizer": ""})
+        rec["count"] += 1
+        if when >= rec["last"]:  # 最近一次出現的名單覆蓋（roster 取最新）
+            rec["last"] = when
+            seen, atts, names = set(), [], {}
+            for name, email in people:
+                email = email.strip().lower()
+                if "@" not in email or email in seen:
+                    continue
+                seen.add(email)
+                atts.append(email)
+                if name and name != email:
+                    names[email] = name
+            rec["attendees"] = atts
+            rec["names"] = names
+            rec["organizer"] = _addr(org)[0] if org else ""
+    return sorted(groups.values(), key=lambda r: (-r["count"], r["title"]))
+
+
+def match_groups(groups, query):
+    """把（模糊的）群組/會議名對應到 collect_meeting_groups 的候選。
+    正規化去掉空白/底線/連字號後做子字串比對（如 'team_a1' 命中 'TEAM_A1 Standup'）。"""
+    def norm(s):
+        return re.sub(r"[\s_\-]+", "", (s or "").lower())
+    q = norm(query)
+    if not q:
+        return []
+    hit = [r for r in groups if q in norm(r["title"])]
+    return sorted(hit, key=lambda r: (-r["count"], r["title"]))
+
+
+# ---------- 公司通訊錄群組（CardDAV，吃 app-password，免 webmail session） ----------
+# 公司公用通訊錄 ID 不寫死在原始碼（避免進版控）；由部署以環境變數 M2K_ADBID 提供，
+# 未設定時停用部門群組查詢（find_group 會退回以會議湊名單）。
+
+
+def _carddav_home(auth=None):
+    """回 (session, home_url, host_root)。CardDAV 與 CalDAV 同一把 app-password；
+    base 由 M2K_CARDDAV_URL 或從 M2K_URL 的 host 推導（/cgi-bin/carddav），
+    通訊錄 home = addressbooks/m<adbid>/（adbid 由 M2K_ADBID 提供，未設則丟 M2KError）。"""
+    import requests
+    from urllib.parse import urlparse
+    url, user, pwd = auth or creds()
+    adbid = os.environ.get("M2K_ADBID", "").strip()
+    if not adbid:
+        raise M2KError("未設定 M2K_ADBID（公司通訊錄 ID），無法讀部門群組；"
+                       "請在部署環境設定，或改用 find_person 逐一查人。")
+    cbase = os.environ.get("M2K_CARDDAV_URL")
+    if cbase:
+        cbase = cbase.rstrip("/")
+    else:
+        host = urlparse(os.environ.get("M2K_URL", DEFAULT_URL)).netloc or "mail.gss.com.tw"
+        cbase = f"https://{host}/cgi-bin/carddav"
+    host_root = cbase.split("/cgi-bin", 1)[0]
+    s = requests.Session()
+    s.auth = (user, pwd)
+    return s, f"{cbase}/addressbooks/m{adbid}/", host_root
+
+
+def list_directory_groups(auth=None):
+    """列公司通訊錄的部門/群組樹，回 list[{name, path, href}]（用 app-password 讀
+    CardDAV，不需 webmail session）。name＝群組名、path＝在組織樹的位置（供消歧）。"""
+    s, home, _ = _carddav_home(auth)
+    body = ('<?xml version="1.0"?><d:propfind xmlns:d="DAV:">'
+            '<d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>')
+    r = s.request("PROPFIND", home, data=body,
+                  headers={"Depth": "1", "Content-Type": "application/xml"}, timeout=30)
+    if r.status_code != 207:
+        raise M2KError(f"讀公司通訊錄失敗（CardDAV 回 {r.status_code}）。")
+    groups = []
+    for resp in re.findall(r"<d:response>(.*?)</d:response>", r.text, re.S):
+        href = re.search(r"<d:href>([^<]+)</d:href>", resp)
+        nm = re.search(r"<d:displayname>([^<]*)</d:displayname>", resp)
+        if not (href and nm and nm.group(1)):
+            continue
+        label = nm.group(1).strip()
+        if label in ("/", "/(/)"):  # 樹根本身跳過
+            continue
+        name = label.split("(", 1)[0].strip()
+        pm = re.search(r"\(([^)]*)\)", label)
+        groups.append({"name": name, "path": pm.group(1) if pm else "",
+                       "href": href.group(1)})
+    return groups
+
+
+def directory_group_members(href, auth=None):
+    """讀某部門/群組集合（href 取自 list_directory_groups）的成員，
+    回 [(name, email)]（去重、去掉 vCard 殘留的 CR）。"""
+    s, _, host_root = _carddav_home(auth)
+    coll = href if href.startswith("http") else host_root + href
+    body = ('<?xml version="1.0"?><c:addressbook-query xmlns:d="DAV:" '
+            'xmlns:c="urn:ietf:params:xml:ns:carddav"><d:prop><d:getetag/>'
+            '<c:address-data/></d:prop></c:addressbook-query>')
+    r = s.request("REPORT", coll, data=body,
+                  headers={"Depth": "1", "Content-Type": "application/xml"}, timeout=30)
+    if r.status_code != 207:
+        raise M2KError(f"讀群組成員失敗（CardDAV 回 {r.status_code}）。")
+    out, seen = [], set()
+    # 逐張 vCard 取 FN + 第一個 EMAIL
+    for card in re.split(r"BEGIN:VCARD", r.text)[1:]:
+        card = card.replace("&#13;", "").replace("\r", "")
+        em = re.search(r"^EMAIL[^:]*:\s*([^\s<]+@[^\s<]+)", card, re.M | re.I)
+        if not em:
+            continue
+        email = em.group(1).strip().lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        fn = re.search(r"^FN[^:]*:\s*([^\r\n<]+)", card, re.M | re.I)
+        out.append((fn.group(1).strip() if fn else "", email))
+    return out
+
+
+def group_mailbox(group_name, user_email):
+    """由部門名推導群組信箱（部門名小寫 @ 使用者網域），如
+    'ENG_A1_GRP' → 'eng_a1_grp@<domain>'。Mail2000 的部門群組信箱採此命名。
+    只是推導：呼叫端應自行確認是否真的存在（見 find_group 的標註）。"""
+    dom = user_email.split("@")[-1] if "@" in (user_email or "") else ""
+    if not dom:
+        return ""
+    return f"{group_name.strip().lower()}@{dom}"
+
+
+def match_directory_groups(groups, query):
+    """模糊比對部門/群組名（正規化去空白/底線/連字號做子字串比對）。"""
+    def norm(s):
+        return re.sub(r"[\s_\-]+", "", (s or "").lower())
+    q = norm(query)
+    if not q:
+        return []
+    return [g for g in groups if q in norm(g["name"])]
 
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -1077,6 +1285,34 @@ def free_slots(busy, start, end, duration_min=60,
         day += dt.timedelta(days=1)
     return [(s0, e0) for s0, e0 in out
             if (e0 - s0).total_seconds() >= duration_min * 60]
+
+
+def busy_from_shared(principal, emails, s, e):
+    """從「已分享給你的日曆」讀出這些人的忙碌區間——伺服器不支援 RFC 6638
+    排程 free-busy 時的替代做法。回 (busy, missing)：busy 為 [(開始, 結束)]
+    區間清單（可餵 free_slots）、missing 為讀不到（未分享/不存在）的 email。
+    全天事件視為整天忙碌（例如請假），避免把會排進當天。"""
+    busy, missing = [], []
+    for em in emails or []:
+        em = (em or "").strip().lower()
+        if not em:
+            continue
+        try:
+            evs = person_calendar(principal, em).search(
+                start=s, end=e, event=True, expand=True)
+        except Exception:
+            missing.append(em)
+            continue
+        for r in _event_rows(evs):
+            a = r["start"]
+            b = r["end"] or a
+            if r["allday"]:
+                a = a.replace(hour=0, minute=0, second=0, microsecond=0)
+                b = max(b, a + dt.timedelta(days=1))  # DTEND 為排他日期
+            if b > a:
+                busy.append((a, b))
+    return busy, missing
+
 
 
 # ---------- 他人行事曆：webmail 排程端點（需 webmail Cookie） ----------
@@ -1624,6 +1860,7 @@ def main():
     pa = sub.add_parser("agenda", help="未來 N 天的會議")
     pa.add_argument("--days", type=int, default=7)
     pa.add_argument("--calendar")
+    pa.add_argument("--person", help="查同事分享給你的行事曆（模糊名字或完整 email）")
     pa.set_defaults(func=cmd_agenda)
 
     pbd = sub.add_parser("board", help="產生看板樣式 HTML（每天一欄）並開啟")
@@ -1646,6 +1883,7 @@ def main():
     pl.add_argument("--start", required=True)
     pl.add_argument("--end", required=True)
     pl.add_argument("--calendar")
+    pl.add_argument("--person", help="查同事分享給你的行事曆（模糊名字或完整 email）")
     pl.set_defaults(func=cmd_list)
 
     pb = sub.add_parser("book", help="建立 / 預約會議")

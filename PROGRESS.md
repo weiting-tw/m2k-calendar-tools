@@ -2,6 +2,16 @@
 
 最後更新：2026-09-21（使用者腳本合併 + 他人行事曆走排程端點）
 
+## 2026-09-21 修正紀錄（傍晚）：找回 8/19–8/20 遺失的 10 個 commit，發 1.14.0
+- 8/25 的 `git filter-branch` 改寫讓 main 少了 8/19–8/20 的 1.7.0～1.13.0（`find_group`、
+  `agenda`/`list_events` 帶 `person` 查已分享行事曆、行事曆 UI 多人疊加、`find_free_slots`
+  讀已分享行事曆算共同空檔、image 安全強化、鎖 `mcp<2`）。Docker Hub 上那些 tag 一直存在，
+  而 NAS 一直跑 1.13.0；今天早上發的 1.6.4 曾把 `latest` 蓋成缺這些功能的版本。
+- 已把那 10 個 commit 的合併 patch 套回 main（三方合併、解衝突），與今天的排程端點/
+  Cookie 透傳並存：`find_free_slots` 帶 attendees 有 Cookie 查任何人、沒 Cookie 退到已分享
+  行事曆；`freebusy_others`（schedule-outbox，此站台 404）不再保留。caldav 維持延遲載入。
+- 版號跳到 1.14.0（Hub 上 1.7.x～1.13.0 已被占用）。之後 bump 前先看 Docker Hub 既有 tag。
+
 ## 2026-09-21 修正紀錄（下午）
 - MCP 新增 `others_agenda`，`find_free_slots` 帶 attendees 改走排程端點：webmail Cookie 透傳
   （stdio `M2K_COOKIE`、HTTP `X-M2K-Cookie`、OAuth 登入頁選填欄位加密封進 token），伺服器不存。

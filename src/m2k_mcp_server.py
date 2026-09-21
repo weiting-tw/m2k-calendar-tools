@@ -3,9 +3,11 @@
 m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議（走 CalDAV）。
 
 範圍：查詢自己的行事曆 + 建立會議（CalDAV，應用程式專用密碼）。
-      「看他人行事曆」（others_agenda、find_free_slots 帶 attendees）走 webmail 排程端點，
-      需要使用者從已登入瀏覽器複製的 webmail Cookie：stdio 用 M2K_COOKIE、HTTP 用
-      X-M2K-Cookie 標頭、OAuth 在登入頁貼上。Cookie 只在 client 端/token 內持有，伺服器不存。
+      看同事行程有兩條路：對方已分享給你的，agenda/list_events 帶 person 走 CalDAV
+      （不需 Cookie）；任何人（含未分享）用 others_agenda、find_free_slots 帶 attendees，
+      走 webmail 排程端點，需要使用者從已登入瀏覽器複製的 webmail Cookie：stdio 用
+      M2K_COOKIE、HTTP 用 X-M2K-Cookie 標頭、OAuth 在登入頁貼上。Cookie 只在 client 端/
+      token 內持有，伺服器不存。
 
 安裝：
   pip install "mcp[cli]" caldav icalendar requests
@@ -143,32 +145,44 @@ def list_calendars(ctx: Context = None) -> str:
         return f"錯誤：{e}"
 
 
-def agenda(days: int = 7, calendar: str = "", ctx: Context = None) -> str:
+def agenda(days: int = 7, person: str = "", calendar: str = "",
+           ctx: Context = None) -> str:
     """看未來 N 天的行程（依天分組）。days 預設 7。
-    calendar 指定行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
+    person：查同事分享給你的行事曆——模糊名字（如 'bear'）或完整 email 皆可，
+    留空＝查自己。對方需先在 webmail 把行事曆分享給你；多候選或未分享會回
+    提示訊息，不會亂猜。
+    calendar 指定自己的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
-        cal = _cal(_auth(ctx), calendar)
+        auth = _auth(ctx) or m2kcal.creds()
+        cal, prefix, err = _person_or_self(auth, person, calendar)
+        if err:
+            return err
         start = dt.datetime.now()
         end = start + dt.timedelta(days=days)
         events = m2kcal.search_events(cal, start=start, end=end, event=True, expand=True)
         # 帶今天日期＋星期當時間錨點：模型換算「下週三」這類相對時間才不會偏移
-        return (f"（今天 {start:%Y-%m-%d} 週{m2kcal._WK[start.weekday()]}）"
+        return (f"{prefix}（今天 {start:%Y-%m-%d} 週{m2kcal._WK[start.weekday()]}）"
                 f"未來 {days} 天，共 {len(events)} 筆:\n"
                 + m2kcal.render_grouped(events))
     except m2kcal.M2KError as e:
         return f"錯誤：{e}"
 
 
-def list_events(start: str, end: str, calendar: str = "",
+def list_events(start: str, end: str, person: str = "", calendar: str = "",
                 ctx: Context = None) -> str:
     """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。
-    calendar 指定行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
+    person：查同事分享給你的行事曆（模糊名字或完整 email），留空＝查自己；
+    對方需先在 webmail 把行事曆分享給你，多候選或未分享會回提示訊息。
+    calendar 指定自己的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
         s = m2kcal.parse_when(start)
         e = m2kcal.parse_when(end)
-        cal = _cal(_auth(ctx), calendar)
-        events = m2kcal.search_events(cal, start=s, end=e, event=True, expand=True)
-        return f"{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
+        auth = _auth(ctx) or m2kcal.creds()
+        cal, prefix, err = _person_or_self(auth, person, calendar)
+        if err:
+            return err
+        events = cal.search(start=s, end=e, event=True, expand=True)
+        return f"{prefix}{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
     except m2kcal.M2KError as e:
         return f"錯誤：{e}"
 
@@ -223,6 +237,9 @@ def book(title: str, start: str, end: str = "", location: str = "",
     calendar 指定寫入的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）；
     notify=true 時以你的名義寄標準會議邀請信（iMIP）給與會者——寄信是對外動作，
     使用者明確要求通知才帶 true。若時段與現有行程重疊會附警告。
+    使用者以**部門／群組名**指定與會者時（如「約 XX 部門開會」），**務必先呼叫
+    find_group 取得當前名單**，並照它的「建議 attendees」帶入（＝群組信箱＋個別成員）；
+    不要憑記憶或先前對話的舊名單，成員會異動、也會漏掉群組信箱。
     """
     try:
         s = m2kcal.parse_when(start)
@@ -488,36 +505,74 @@ def _cal_ui_uri() -> str:
 CAL_UI_URI = _cal_ui_uri()
 
 
-def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx) -> dict[str, Any]:
+def _tag_owner(rows: list[dict], owner: str) -> list[dict]:
+    for r in rows:
+        r["owner"] = owner
+    return rows
+
+
+def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
+                      person: str = "") -> dict[str, Any]:
+    """組行事曆 UI 資料。person 給一個或多個（逗號分隔）同事名字/email，
+    會把「你自己 + 每位有分享的同事」的行程合併，每筆帶 owner 欄位供 UI
+    依人分色/篩選；解析失敗（多候選、未分享）收進 notes 於 UI 提示。"""
     auth = _auth(ctx) or m2kcal.creds()
-    cal = _cal(auth)
-    events = m2kcal.search_events(cal, start=s, end=e, event=True, expand=True)
+    me = auth[1]
+    owners = [{"email": me, "label": me.split("@")[0]}]
+    events = _tag_owner(
+        m2kcal.events_json(_cal(auth).search(start=s, end=e, event=True, expand=True)), me)
+    notes: list[str] = []
+    seen = {me.lower()}
+    for token in [t.strip() for t in (person or "").split(",") if t.strip()]:
+        email, err = _resolve_person(auth, token)
+        if err:
+            notes.append(err.splitlines()[0])
+            continue
+        if email.lower() in seen:
+            continue
+        try:
+            evs = m2kcal.person_calendar(m2kcal.connect(auth), email).search(
+                start=s, end=e, event=True, expand=True)
+        except m2kcal._not_found_error():
+            notes.append(f"{email}：未分享行事曆給你，無法顯示")
+            continue
+        seen.add(email.lower())
+        owners.append({"email": email, "label": email.split("@")[0]})
+        events += _tag_owner(m2kcal.events_json(evs), email)
     return {
         "range": {"start": s.strftime("%Y-%m-%d"), "end": e.strftime("%Y-%m-%d")},
         "today": dt.date.today().isoformat(),
-        "me": auth[1],  # UI 據此顯示「我的出席狀態」快速回覆按鈕
-        "events": m2kcal.events_json(events),
+        "me": me,  # UI 據此顯示「我的出席狀態」快速回覆按鈕，並判斷可否編輯
+        "owners": owners,  # 納入顯示的人（me 一定在第一個），UI 依此分色/做篩選
+        "events": events,  # 每筆帶 owner 欄位（= owners 裡的 email）
+        "notes": notes,    # 解析失敗提示（多候選/未分享），UI 顯示
     }
 
 
-def show_calendar(start: str = "", days: int = 7, ctx: Context = None) -> dict[str, Any]:
+def show_calendar(start: str = "", days: int = 7, person: str = "",
+                  ctx: Context = None) -> dict[str, Any]:
     """以互動行事曆 UI 顯示行程（週/月檢視，可直接在 UI 建立與修改會議）。
     start 'YYYY-MM-DD'（預設今天）起 days 天。
+    person：同時把同事分享給你的行事曆疊在畫面上（一個或多個，逗號分隔；
+    模糊名字如 'bear' 或完整 email），UI 會依人分色並可勾選篩選、加人。
     使用者要「看行事曆／排程總覽」時優先用這個；純文字摘要用 agenda / list_events。"""
     try:
         s = (m2kcal.parse_when(start) if start
              else dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
-        return _calendar_payload(s, s + dt.timedelta(days=days), ctx)
+        return _calendar_payload(s, s + dt.timedelta(days=days), ctx, person)
     except m2kcal.M2KError as e:
         return {"error": str(e), "events": []}
     except Exception as e:  # UI 端要能顯示錯誤，不能讓 tool call 直接炸掉
         return {"error": f"讀取行程失敗：{e}", "events": []}
 
 
-def calendar_data(start: str, end: str, ctx: Context = None) -> dict[str, Any]:
-    """（行事曆 UI 專用）回指定期間的結構化行程資料。start/end 'YYYY-MM-DD'。"""
+def calendar_data(start: str, end: str, person: str = "",
+                  ctx: Context = None) -> dict[str, Any]:
+    """（行事曆 UI 專用）回指定期間的結構化行程資料。start/end 'YYYY-MM-DD'。
+    person：一個或多個（逗號分隔）同事名字/email，疊加顯示其分享的行事曆。"""
     try:
-        return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end), ctx)
+        return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end),
+                                 ctx, person)
     except m2kcal.M2KError as e:
         return {"error": str(e), "events": []}
     except Exception as e:
@@ -684,6 +739,162 @@ def find_person(names: list[str], ctx: Context = None) -> str:
     return "\n".join(lines)
 
 
+_GROUPS_CACHE: dict[str, tuple[float, list]] = {}
+_DIRGROUPS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _dir_groups(auth):
+    """公司通訊錄部門群組（CardDAV，app-password），依使用者快取。"""
+    key = auth[1]
+    hit = _DIRGROUPS_CACHE.get(key)
+    if hit and time.time() - hit[0] < _CONTACTS_TTL:
+        return hit[1]
+    groups = m2kcal.list_directory_groups(auth)
+    _cache_put(_DIRGROUPS_CACHE, key, groups)
+    return groups
+
+
+def _known_addresses(auth) -> set:
+    """使用者自己往來過的位址集合（行事曆歷史＋信件往來），用來判斷推導出的
+    群組信箱是否真的存在——避免把猜的位址當成真的、寄出去退信。"""
+    out = set()
+    try:
+        key = auth[1]
+        hit = _CONTACTS_CACHE.get(key)
+        if hit and time.time() - hit[0] < _CONTACTS_TTL:
+            out |= set(hit[1])
+        else:
+            c = m2kcal.collect_contacts(_cal(auth))
+            _cache_put(_CONTACTS_CACHE, key, c)
+            out |= set(c)
+    except Exception:
+        pass
+    try:
+        out |= set(_mail_contacts(auth))
+    except Exception:
+        pass
+    return out
+
+
+def find_group(name: str, ctx: Context = None) -> str:
+    """把（模糊的）群組/部門名（如 'team_a1'）展開成成員 email 名單，供 book 帶入。
+    優先查『公司通訊錄的正式部門群組』（CardDAV，用你的應用程式專用密碼即可，
+    免 webmail session）；查無相符部門時，退回『你參與過的定期會議』湊名單。
+    使用者說「約某某部門開會」這類群組名時先用這個展開；**多個候選或名單看來不對時，
+    務必把名單列給使用者確認再 book，絕不自行假設成員**。"""
+    try:
+        auth = _auth(ctx) or m2kcal.creds()
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+
+    # 1) 公司通訊錄正式部門群組（CardDAV）
+    try:
+        dm = m2kcal.match_directory_groups(_dir_groups(auth), name)
+        dir_err = ""
+    except Exception as e:  # CardDAV 讀不到（未設 ADBID/權限/網路）就退回會議來源
+        dm = []
+        dir_err = f"{type(e).__name__}: {e}"
+    if dm:
+        known = _known_addresses(auth)  # 用來確認群組信箱是否真的存在（見下）
+        lines = [f"「{name}」在公司通訊錄找到 {len(dm)} 個部門" +
+                 ("（請確認要哪個再 book）：" if len(dm) > 1 else "：")]
+        for g in dm[:6]:
+            try:
+                emails = [em for _, em in m2kcal.directory_group_members(g["href"], auth)]
+            except Exception:
+                emails = []
+            lines.append(f"\n▸ {g['name']}  {g['path']}（{len(emails)} 人）")
+            box = m2kcal.group_mailbox(g["name"], auth[1])
+            if box:
+                seen = "（你的往來紀錄中存在）" if box in known else "（推測，未見於你的往來紀錄，不確定是否存在）"
+                lines.append(f"  群組信箱：{box} {seen}")
+            lines.append("  成員：" + (", ".join(emails) if emails else "（讀不到成員）"))
+            if emails:
+                rec = ([box] if box and box in known else []) + emails
+                lines.append("  ✦ book 建議 attendees（直接照抄這串）：" + ", ".join(rec))
+        lines.append("\n說明：個別成員放進 attendees 才會每人收到邀請並能回覆出席；群組信箱"
+                     "只是一個收件位址、不會展開成員，一起帶可讓群組也留一份紀錄。"
+                     "請用上面「建議 attendees」那一串，不要只帶群組信箱、也不要漏掉它。")
+        return "\n".join(lines)
+
+    # 2) 退回：你參與過的定期會議湊名單
+    try:
+        key = auth[1]
+        hit = _GROUPS_CACHE.get(key)
+        if hit and time.time() - hit[0] < _CONTACTS_TTL:
+            groups = hit[1]
+        else:
+            groups = m2kcal.collect_meeting_groups(_cal(auth))
+            _cache_put(_GROUPS_CACHE, key, groups)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    # 通訊錄查詢若是「出錯」而非「查無」，把原因附上供除錯（權限/未設定/網路）
+    dnote = f"（註：公司通訊錄查詢失敗 → {dir_err}）\n" if dir_err else ""
+    matches = m2kcal.match_groups(groups, name)
+    if not matches:
+        return (dnote + f"找不到叫「{name}」的部門或會議。公司通訊錄裡沒有相符部門，"
+                "你參與過的會議也沒有相符標題；請確認名稱，或用 find_person 逐一查人。")
+    lines = [dnote + f"「{name}」公司通訊錄無相符部門，改用你參與過的會議，找到 {len(matches)} 個" +
+             ("（請確認要用哪個、名單對不對再 book）：" if len(matches) > 1 else "：")]
+    for r in matches[:5]:
+        emails = r["attendees"]
+        lines.append(f"\n▸ {r['title']}（出現 {r['count']} 次，最近 {r['last'] or '?'}，"
+                     f"{len(emails)} 人）")
+        if r["organizer"]:
+            lines.append(f"  召集人：{r['organizer']}")
+        lines.append("  與會者：" + (", ".join(emails) if emails else "（此會議無與會者欄位）"))
+    return "\n".join(lines)
+
+
+def _resolve_person(auth, name):
+    """把（模糊的）名字解析成單一 email。回 (email, err)：email 有值＝唯一
+    命中或本就是完整 email；err 有值＝找不到／多候選（訊息可直接回使用者）。
+    來源同 find_person（公司通訊錄檔＋行事曆歷史＋信件往來），去重後判斷。"""
+    name = (name or "").strip()
+    if "@" in name:
+        return name.lower(), None
+    key = auth[1]
+    hit = _CONTACTS_CACHE.get(key)
+    if hit and time.time() - hit[0] < _CONTACTS_TTL:
+        contacts = hit[1]
+    else:
+        contacts = m2kcal.collect_contacts(_cal(auth))
+        _cache_put(_CONTACTS_CACHE, key, contacts)
+    merged = {}
+    for src in (_directory_contacts(), contacts, _mail_contacts(auth)):
+        for _s, email, rec in m2kcal.match_contacts(src, name):
+            merged.setdefault(email, rec.get("name") or email.split("@")[0])
+    if not merged:
+        return None, f"找不到「{name}」，請確認名字或改用完整 email。"
+    if len(merged) > 1:
+        lines = [f"「{name}」有多個候選，請改用完整 email 再查一次："]
+        lines += [f"  - {nm} <{em}>" for em, nm in list(merged.items())[:8]]
+        return None, "\n".join(lines)
+    return next(iter(merged)), None
+
+
+def _person_or_self(auth, person, calendar=""):
+    """回 (Calendar, 標題前綴, 錯誤字串)。person 空＝查自己（calendar 可選
+    自己的哪一本）；否則解析成同事 email 並指向其分享日曆。解析失敗／多候選／
+    未分享時 err 有值（可直接回使用者），cal 為 None。"""
+    person = (person or "").strip()
+    if not person:
+        return _cal(auth, calendar), "", None
+    email, err = _resolve_person(auth, person)
+    if err:
+        return None, "", err
+    cal = m2kcal.person_calendar(m2kcal.connect(auth), email)
+    try:  # 未分享／帳號不存在→404
+        cal.search(start=dt.datetime.now(),
+                   end=dt.datetime.now() + dt.timedelta(days=1),
+                   event=True, expand=True)
+    except m2kcal._not_found_error():
+        return None, "", (f"找到 {email}，但讀不到對方行事曆"
+                          "（可能未分享給你，或帳號不存在）。"
+                          f"不必分享也能看的做法：用 others_agenda(emails=[\"{email}\"])，需 webmail Cookie。")
+    return cal, f"【{email}】", None
+
+
 def delete_event(uid: str, occurrence: str = "", notify: bool = False,
                  ctx: Context = None) -> str:
     """刪除會議（依 uid，取自查詢輸出的 id: 欄位）。無法復原。
@@ -775,10 +986,9 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
     day_start/day_end 每天的可排時段；include_weekends 是否含週末；
     attendees 一併扣掉這些同事的忙碌時段、回傳大家都有空的時間（email 清單，
-    人名先用 find_person 查）。查他人需要 webmail Cookie，沒有時會明講怎麼提供。"""
-    cookie = _cookie(ctx) if attendees else ""
-    if attendees and not cookie.strip():
-        return "錯誤：" + m2kcal.NO_COOKIE_HINT
+    人名先用 find_person / find_group 查）。有 webmail Cookie 時查得到任何人（排程端點）；
+    沒有時只能讀「對方已分享給你的行事曆」，並列出未納入計算的人。"""
+    cookie = _cookie(ctx).strip() if attendees else ""
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -790,7 +1000,7 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
         others_note = []
-        if attendees:
+        if attendees and cookie:
             others, dropped = _others_schedule(cookie, attendees, s, e)
             failed = [em for em, evs in others.items() if isinstance(evs, Exception)]
             for em, evs in others.items():
@@ -802,6 +1012,15 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
                     f"{em}（{others[em]}）" for em in failed))
             if dropped:
                 others_note.append(f"⚠ 一次最多查 {m2kcal.MAX_SCHED_PEOPLE} 人，未計入：" + ", ".join(dropped))
+        elif attendees:
+            # 沒 Cookie → 只能讀「對方已分享給你的行事曆」；讀不到的明確列出
+            sbusy, missing = m2kcal.busy_from_shared(p, attendees, s, e)
+            busy += sbusy
+            got = len(attendees) - len(missing)
+            others_note.append(f"（沒有 webmail Cookie，他人忙碌時段取自其分享給你的行事曆，已納入 {got} 人；"
+                               "要查未分享的人請提供 Cookie，見 others_agenda 說明）")
+            if missing:
+                others_note.append("⚠ 這些人沒有把行事曆分享給你，未納入計算：" + ", ".join(missing))
         slots = m2kcal.free_slots(busy, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
     except m2kcal.M2KError as err:
@@ -921,7 +1140,7 @@ def _register_prompts(server: "FastMCP") -> None:
                 f"{now:%H:%M} 台北 +08:00")
 
 
-TOOLS = (list_calendars, search_events, find_free_slots, find_person,
+TOOLS = (list_calendars, search_events, find_free_slots, find_person, find_group,
          get_event, list_invitations, others_agenda)
 # 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
 # （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）

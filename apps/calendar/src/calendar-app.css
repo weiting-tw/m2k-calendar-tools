@@ -72,12 +72,25 @@ body {
 .ag { flex: 1; overflow-y: auto; min-height: 0; padding: 2px 8px 8px; }
 .ag-day { font-weight: 600; font-size: 12px; color: var(--tx2); padding: 8px 2px 3px; position: sticky; top: 0; background: var(--bg); }
 .ag-day.today { color: var(--ac); }
-.ag-ev { display: flex; gap: 8px; align-items: baseline; padding: 5px 4px; border-top: 1px solid var(--bd); cursor: pointer; font-size: 13px; }
+.ag-ev { display: flex; gap: 8px; align-items: baseline; padding: 5px 4px 5px 6px; border-top: 1px solid var(--bd); border-left: 3px solid transparent; cursor: pointer; font-size: 13px; }
 .ag-ev:hover { background: var(--bg2); }
 .ag-t { color: var(--tx2); font-variant-numeric: tabular-nums; flex: none; width: 42px; }
 .ag-title { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-loc { color: var(--tx2); font-size: 11px; flex: none; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-ev.declined { opacity: .45; text-decoration: line-through; }
+
+/* 多人疊加：圖例 + 加人 + 提示 */
+.cal-hdr-extra { border-bottom: 1px solid var(--bd); background: var(--bg2); padding: 6px 10px; }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.lg { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--bd); background: var(--bg); color: var(--tx); border-radius: 999px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
+.lg:hover { background: var(--bg2); }
+.lg.off { opacity: .5; text-decoration: line-through; }
+.lg-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.lg-lab { white-space: nowrap; }
+.lg-add { display: inline-flex; gap: 4px; align-items: center; margin-left: auto; }
+.lg-add-inp { border: 1px solid var(--bd); border-radius: 6px; padding: 4px 8px; font-size: 12px; background: var(--bg); color: var(--tx); width: 150px; }
+.cal-notes { font-size: 11px; color: var(--tx2); margin-top: 5px; word-break: break-word; }
+.ro-note { color: var(--tx2); font-style: italic; }
 
 /* 詳情 / 表單 */
 .ov { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
@@ -111,7 +124,8 @@ body {
   .mo-cell { min-height: 52px; }
   .card { width: 94vw; padding: 14px; max-height: 90vh; }
   /* input 字級 ≥16px：iOS Safari 聚焦時才不會自動放大整頁 */
-  .frow input, .frow textarea, .frow select, .rsvp input { font-size: 16px; }
+  .frow input, .frow textarea, .frow select, .rsvp input, .lg-add-inp { font-size: 16px; }
+  .lg-add-inp { width: 130px; }
   .flab { width: 44px; }
   .acts { position: sticky; bottom: 0; background: var(--bg); padding-top: 8px; }
 }

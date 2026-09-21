@@ -16,11 +16,24 @@ FROM python:3.12-slim
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 套用 base image 的安全更新（Debian 安全修補）；先升級 pip 再安裝相依
+RUN apt-get update && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
 # MCP App 行事曆 UI（show_calendar 的 ui:// resource 讀這個建置產物）
 COPY apps/calendar/dist/ apps/calendar/dist/
+
+# 縮小攻擊面：runtime 只執行 Python，用不到 perl 與套件管理器（兩者各自帶著
+# base image 的 CVE）。移除後 CRITICAL 歸零、HIGH 只剩上游尚無修正的項目。
+RUN (apt-get purge -y --allow-remove-essential perl-base 2>/dev/null \
+     || dpkg --purge --force-remove-essential --force-depends perl-base || true) \
+ && rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+           /usr/local/lib/python3.12/site-packages/setuptools* \
+           /usr/local/lib/python3.12/site-packages/pkg_resources \
+           /usr/local/bin/pip*
 
 # 非 root 執行；OAuth 執行期檔案（金鑰、client 註冊）collect 在 /data
 RUN useradd -r -u 10001 m2k && mkdir /data && chown m2k /data

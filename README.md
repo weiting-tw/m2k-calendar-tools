@@ -113,7 +113,8 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 `src/m2k_mcp_server.py` 提供工具：
 - 查詢：`agenda`、`list_events`、`search_events`（關鍵字搜標題/地點/描述）、
-  `find_free_slots`（找空檔；帶 `attendees` 會一併扣掉同事的忙碌時段）、
+  `find_free_slots`（找空檔；帶 `attendees` 會一併扣掉同事的忙碌時段：有 Cookie 查任何人，沒 Cookie 只算已分享者）、
+  `find_group`（模糊群組名展開為與會者）、
   `others_agenda`（看同事行程，不必對方分享）、
   `find_person`（模糊人名查 email）、
   `list_calendars`
@@ -183,7 +184,8 @@ claude mcp add m2k-calendar \
 注意事項：
 - 憑證也可放專案根目錄 `.env`（server 啟動時自動載入），就不必寫進設定檔。
 - 可預期錯誤（帳密錯、時間格式錯）會以「錯誤：...」回覆 Claude，server 不會中斷。
-- 範圍：只能查**自己的**日曆與建立會議；看他人行事曆請用使用者腳本（SAML session 限制）。
+- 範圍：查/建/改/刪自己的日曆；查詢另支援同事**已分享給你**的日曆
+  （`agenda`/`list_events` 帶 `person`，模糊名字或完整 email，走 CalDAV、未分享則讀不到）。
 
 ### 公用部署（HTTP 模式，多人共用）
 

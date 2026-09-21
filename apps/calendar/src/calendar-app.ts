@@ -18,8 +18,14 @@ interface Ev {
   uid: string; summary: string; start: string; end: string; allday: boolean;
   location: string; description: string; organizer: string; rrule: string;
   attendees: Attendee[];
+  owner?: string;  // 該筆所屬 owner 的 email（多人疊加時用；未定義＝自己日曆）
 }
-interface CalData { range: { start: string; end: string }; today: string; me?: string; events: Ev[] }
+interface Owner { email: string; label: string }
+interface CalData {
+  range: { start: string; end: string }; today: string; me?: string; events: Ev[];
+  owners?: Owner[];   // 納入顯示的人；me 一定在第一個
+  notes?: string[];   // 解析失敗提示字串（例如「kate：未分享行事曆給你」）
+}
 
 const WK = ["日", "一", "二", "三", "四", "五", "六"];
 const HOUR_H = 44;          // 週檢視每小時高度(px)
@@ -33,6 +39,8 @@ let loadError = "";
 let canFullscreen = false;
 let displayMode = "inline";
 let hostH: number | null = null;  // host 給的內嵌可用高度（containerDimensions），null=未知
+let personArg = "";  // 疊加顯示的人（逗號分隔，除 me 外的 email；加人時暫時含模糊 token）
+const hiddenOwners = new Set<string>();  // 被圖例取消勾選、暫時隱藏的 owner（小寫 email）
 
 const root = document.getElementById("root")!;
 const app = new App({ name: "m2k Calendar", version: "1.4.0" });
@@ -80,6 +88,25 @@ function covered(): boolean {
   return dstr(start) >= data.range.start && dstr(end) <= data.range.end;
 }
 
+// 抓到新資料後，把 personArg 正規化成「owners 裡除 me 以外的 email 逗號串」：
+// 翻頁不用每次重跑模糊解析，解析失敗的 token（不在 owners）也不會一直重試報錯
+function normalizePersonArg() {
+  if (!data?.owners || !data.me) return;
+  const me = data.me.toLowerCase();
+  personArg = data.owners
+    .filter((o) => o.email.toLowerCase() !== me)
+    .map((o) => o.email)
+    .join(",");
+}
+
+// 加人：把輸入的名字/email append 進 personArg 後強制重抓（後端負責模糊解析與合併）
+function addPerson(token: string) {
+  const t = token.trim();
+  if (!t) return;
+  personArg = personArg ? personArg + "," + t : t;
+  fetchData(true);
+}
+
 async function fetchData(force = false): Promise<void> {
   // 目前快取已涵蓋要顯示的範圍就直接渲染（日/週翻頁大多免重抓）
   if (!force && covered()) {
@@ -98,12 +125,12 @@ async function fetchData(force = false): Promise<void> {
   try {
     const res = await app.callServerTool({
       name: "calendar_data",
-      arguments: { start: dstr(fs), end: dstr(fe) },
+      arguments: { start: dstr(fs), end: dstr(fe), ...(personArg ? { person: personArg } : {}) },
     });
     if (seq !== fetchSeq) return;  // 已有更新的請求在跑，這筆作廢
     const sc = extractCalData(res);
     if (sc?.error) loadError = sc.error;
-    else if (sc?.events) data = sc;
+    else if (sc?.events) { data = sc; normalizePersonArg(); }
     else loadError = firstText(res) || "伺服器沒有回傳資料";
   } catch (e) {
     if (seq === fetchSeq) loadError = String(e);
@@ -128,12 +155,12 @@ async function maybePrefetch(): Promise<void> {
   try {
     const res = await app.callServerTool({
       name: "calendar_data",
-      arguments: { start: dstr(addDays(start, -pad)), end: dstr(addDays(end, pad)) },
+      arguments: { start: dstr(addDays(start, -pad)), end: dstr(addDays(end, pad)), ...(personArg ? { person: personArg } : {}) },
     });
     if (seq !== fetchSeq) return;  // 期間使用者又觸發了正式抓取
     const sc = extractCalData(res);
     if (sc?.events) {
-      data = sc;
+      data = sc; normalizePersonArg();
       if (!document.querySelector(".ov")) render();  // 詳情/表單開著就不重畫
     }
   } catch { /* 背景補抓失敗就算了，翻到邊界外會走正常載入流程 */ }
@@ -157,9 +184,44 @@ function firstText(res: unknown): string {
   return c?.find((x) => x.type === "text")?.text?.slice(0, 200) ?? "";
 }
 
+// ---------- 依人分色 ----------
+// me 用固定醒目色（沿用主題 accent），其他人各自從 palette 取色（避開藍色以資區別）
+const OWNER_PALETTE = ["#0891b2", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#ca8a04", "#0d9488", "#9333ea"];
+
+// owner 是否為本人（未定義 owner＝自己日曆的事件）
+function isMine(ev: Ev): boolean {
+  if (!ev.owner) return true;
+  return !!data?.me && ev.owner.toLowerCase() === data.me.toLowerCase();
+}
+
+// 依 owner email 取色：me → accent 變數；其他 → 依 owners 順序取 palette，不在清單則雜湊兜底
+function ownerColor(email: string): string {
+  const me = data?.me?.toLowerCase();
+  if (!email || (me && email.toLowerCase() === me)) return "var(--ac)";
+  const owners = data?.owners ?? [];
+  let idx = owners.findIndex((o) => o.email.toLowerCase() === email.toLowerCase());
+  if (idx < 0) { let h = 0; for (const ch of email.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0; idx = h; }
+  return OWNER_PALETTE[idx % OWNER_PALETTE.length];
+}
+
+// 多人時把事件塊/chip 依 owner 上色（單人維持 CSS 預設 accent 樣式）
+function paintOwner(elm: HTMLElement, ev: Ev, fill = true) {
+  if (!data?.owners || data.owners.length <= 1) return;
+  const c = ownerColor(ev.owner || (data.me ?? ""));
+  elm.style.borderLeftColor = c;
+  if (fill) elm.style.background = `color-mix(in srgb, ${c} 16%, var(--bg))`;
+}
+
+// 事件是否被圖例隱藏（owner 未定義＝自己日曆，比對 me）
+function isHidden(ev: Ev): boolean {
+  const owner = (ev.owner || data?.me || "").toLowerCase();
+  return !!owner && hiddenOwners.has(owner);
+}
+
 // ---------- 畫面 ----------
+// 我的出席狀態（只作用在 owner===me 的事件；別人日曆的副本不標）
 function myPartstat(ev: Ev): string {
-  if (!data?.me) return "";
+  if (!data?.me || !isMine(ev)) return "";
   const me = data.me.toLowerCase();
   return ev.attendees.find((a) => a.email.toLowerCase() === me)?.partstat ?? "";
 }
@@ -216,6 +278,7 @@ function renderAgenda(): HTMLElement {
       `${d.getMonth() + 1}/${d.getDate()}（週${WK[d.getDay()]}）`));
     for (const e of evs) {
       const row = el("div", "ag-ev" + (myPartstat(e) === "DECLINED" ? " declined" : ""));
+      paintOwner(row, e, false);  // 只染左邊色條，保留 hover 底色
       row.append(el("span", "ag-t", e.allday ? "全天" : hhmm(parseDT(e.start))),
                  el("span", "ag-title", e.summary));
       if (e.location) row.append(el("span", "ag-loc", "@" + e.location));
@@ -269,12 +332,68 @@ function renderHeader(): HTMLElement {
     }));
   }
   h.append(nav, title, right);
-  return h;
+  const extras = data ? renderHeaderExtras() : null;
+  if (!extras) return h;
+  const container = el("div", "cal-hdr-wrap");
+  container.append(h, extras);
+  return container;
+}
+
+// header 下方：多人圖例（勾選切換顯示）＋加人控制＋解析失敗提示（notes）
+function renderHeaderExtras(): HTMLElement {
+  const owners = data?.owners ?? [];
+  const notes = data?.notes ?? [];
+  const me = data?.me?.toLowerCase();
+  const wrap = el("div", "cal-hdr-extra");
+  const row = el("div", "cal-legend");
+  // 多人時才顯示圖例 chip
+  if (owners.length > 1) {
+    for (const o of owners) {
+      const on = !hiddenOwners.has(o.email.toLowerCase());
+      const chip = el("button", "lg" + (on ? "" : " off")) as HTMLButtonElement;
+      const dot = el("span", "lg-dot");
+      dot.style.background = ownerColor(o.email);
+      const isMe = !!me && o.email.toLowerCase() === me;
+      chip.append(dot, el("span", "lg-lab", o.label + (isMe ? "（我）" : "")));
+      chip.onclick = () => {
+        const k = o.email.toLowerCase();
+        if (hiddenOwners.has(k)) hiddenOwners.delete(k); else hiddenOwners.add(k);
+        render();
+      };
+      row.appendChild(chip);
+    }
+  }
+  // 加人控制（單人時也顯示，讓使用者能加第一個同事）：點按鈕展開 input
+  const addWrap = el("div", "lg-add");
+  const inp = el("input") as HTMLInputElement;
+  inp.type = "text"; inp.className = "lg-add-inp"; inp.placeholder = "名字或 email";
+  inp.style.display = "none";
+  const addBtn = el("button", "btn", "＋ 加人") as HTMLButtonElement;
+  const submit = () => {
+    const v = inp.value.trim();
+    if (!v) { inp.style.display = "none"; return; }
+    addPerson(v);  // 後續 render 會重建控制，input 自然收起
+  };
+  addBtn.onclick = () => {
+    if (inp.style.display === "none") { inp.style.display = ""; inp.focus(); }
+    else submit();
+  };
+  inp.onkeydown = (e) => {
+    if (e.key === "Enter") submit();
+    else if (e.key === "Escape") { inp.value = ""; inp.style.display = "none"; }
+  };
+  addWrap.append(inp, addBtn);
+  row.appendChild(addWrap);
+  wrap.appendChild(row);
+  // 解析失敗/多候選提示：灰字不干擾
+  if (notes.length) wrap.appendChild(el("div", "cal-notes", "ℹ " + notes.join("　")));
+  return wrap;
 }
 
 function eventsOfDay(d: Date): Ev[] {
   if (!data) return [];
   return data.events
+    .filter((e) => !isHidden(e))
     .filter((e) => {
       const s = parseDT(e.start);
       const en = e.end ? parseDT(e.end) : s;
@@ -337,6 +456,7 @@ function renderTimeGrid(): HTMLElement {
     const c = el("div", "wk-allday-cell");
     for (const e of eventsOfDay(d).filter((x) => x.allday)) {
       const chip = el("div", "chip", e.summary);
+      paintOwner(chip, e);
       chip.onclick = () => openDetail(e);
       c.appendChild(chip);
     }
@@ -378,6 +498,7 @@ function renderTimeGrid(): HTMLElement {
       const bot = Math.min(24 * HOUR_H,
         (Math.min(e2.getTime(), addDays(d0, 1).getTime()) - d0.getTime()) / 3600000 * HOUR_H);
       const b = el("div", "wk-ev" + (myPartstat(ev) === "DECLINED" ? " declined" : ""));
+      paintOwner(b, ev);
       b.style.top = `${top}px`;
       b.style.height = `${Math.max(18, bot - top - 2)}px`;
       b.style.left = `calc(${(ci / cols) * 100}% + 1px)`;
@@ -389,8 +510,11 @@ function renderTimeGrid(): HTMLElement {
         if (b.dataset.dragged) { delete b.dataset.dragged; return; }
         openDetail(ev);
       };
-      b.ondblclick = (x) => { x.stopPropagation(); openForm(ev); };
-      attachDrag(b, ev);
+      // 非本人事件唯讀：不綁編輯（雙擊開表單）與拖曳
+      if (isMine(ev)) {
+        b.ondblclick = (x) => { x.stopPropagation(); openForm(ev); };
+        attachDrag(b, ev);
+      }
       col.appendChild(b);
     }
     grid.appendChild(col);
@@ -478,6 +602,7 @@ function renderMonth(): HTMLElement {
       const chip = el("div", "chip" + (e.allday ? " allday" : "")
         + (myPartstat(e) === "DECLINED" ? " declined" : ""),
         (e.allday ? "" : hhmm(parseDT(e.start)) + " ") + e.summary);
+      paintOwner(chip, e);
       chip.onclick = () => openDetail(e);
       cell.appendChild(chip);
     }
@@ -501,6 +626,7 @@ function overlay(): HTMLElement {
 }
 
 function openDetail(ev: Ev) {
+  const editable = isMine(ev);  // 非本人日曆的事件唯讀，只顯示詳情
   const ov = overlay();
   const card = el("div", "card");
   card.append(el("h2", "", ev.summary));
@@ -512,6 +638,11 @@ function openDetail(ev: Ev) {
   if (ev.rrule) meta.append(el("div", "", `⟳ ${ev.rrule}`));
   if (ev.location) meta.append(el("div", "", `📍 ${ev.location}`));
   if (ev.organizer) meta.append(el("div", "", `👤 召集人：${ev.organizer}`));
+  if (!editable) {
+    const label = data?.owners?.find((o) => o.email.toLowerCase() === (ev.owner ?? "").toLowerCase())?.label
+      ?? ev.owner;
+    meta.append(el("div", "ro-note", `📖 ${label} 的日曆（唯讀）`));
+  }
   card.appendChild(meta);
   if (ev.attendees.length) {
     const box = el("div", "atts");
@@ -522,7 +653,7 @@ function openDetail(ev: Ev) {
     card.appendChild(box);
   }
   // 我的出席回覆（只更新自己日曆的狀態，不會通知召集人）
-  const mine = data?.me
+  const mine = editable && data?.me
     ? ev.attendees.find((a) => a.email.toLowerCase() === data!.me!.toLowerCase())
     : undefined;
   if (mine) {
@@ -547,8 +678,8 @@ function openDetail(ev: Ev) {
     }
     card.appendChild(row);
   }
-  // 快速加入其他與會者
-  {
+  // 快速加入其他與會者（僅本人事件）
+  if (editable) {
     const row = el("div", "rsvp");
     const inp = el("input") as HTMLInputElement;
     inp.type = "text"; inp.placeholder = "加入與會者 email（逗號可多位）";
@@ -572,46 +703,50 @@ function openDetail(ev: Ev) {
     const d = el("div", "desc"); d.textContent = ev.description;
     card.appendChild(d);
   }
-  // 寄通知信選項（刪除/取消時用；寄信是對外動作，預設不勾）
-  const nrow = el("label", "rsvp");
-  const nchk = el("input") as HTMLInputElement;
-  nchk.type = "checkbox";
-  nrow.append(nchk, el("span", "", "刪除時寄取消通知信給與會者"));
-  if (ev.attendees.length) card.appendChild(nrow);
-
   const acts = el("div", "acts");
-  const mkDel = (label: string, confirm: string, occurrence: string) => {
-    const b = el("button", "btn danger", label) as HTMLButtonElement;
-    b.onclick = async () => {
-      if (b.dataset.arm !== "1") {
-        b.dataset.arm = "1";
-        b.textContent = confirm;
-        return;
-      }
-      b.disabled = true; b.textContent = "刪除中…";
-      const args: Record<string, unknown> = { uid: ev.uid, notify: nchk.checked };
-      if (occurrence) args.occurrence = occurrence;
-      const res = await app.callServerTool({ name: "delete_event", arguments: args })
-        .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
-      const txt = firstText(res);
-      if (txt.startsWith("錯誤")) { toast(txt, true); b.disabled = false; b.textContent = label; delete b.dataset.arm; return; }
-      toast(occurrence ? "已取消這一次" : "已刪除");
-      ov.remove();
-      fetchData(true);
+  // 編輯類動作（刪除/編輯/寄通知信）只在本人日曆的事件顯示；別人的事件唯讀
+  if (editable) {
+    // 寄通知信選項（刪除/取消時用；寄信是對外動作，預設不勾）
+    const nrow = el("label", "rsvp");
+    const nchk = el("input") as HTMLInputElement;
+    nchk.type = "checkbox";
+    nrow.append(nchk, el("span", "", "刪除時寄取消通知信給與會者"));
+    if (ev.attendees.length) card.appendChild(nrow);
+
+    const mkDel = (label: string, confirm: string, occurrence: string) => {
+      const b = el("button", "btn danger", label) as HTMLButtonElement;
+      b.onclick = async () => {
+        if (b.dataset.arm !== "1") {
+          b.dataset.arm = "1";
+          b.textContent = confirm;
+          return;
+        }
+        b.disabled = true; b.textContent = "刪除中…";
+        const args: Record<string, unknown> = { uid: ev.uid, notify: nchk.checked };
+        if (occurrence) args.occurrence = occurrence;
+        const res = await app.callServerTool({ name: "delete_event", arguments: args })
+          .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
+        const txt = firstText(res);
+        if (txt.startsWith("錯誤")) { toast(txt, true); b.disabled = false; b.textContent = label; delete b.dataset.arm; return; }
+        toast(occurrence ? "已取消這一次" : "已刪除");
+        ov.remove();
+        fetchData(true);
+      };
+      return b;
     };
-    return b;
-  };
-  if (ev.rrule) {
-    acts.append(mkDel("刪除這次", "確認取消這一次？", ev.start.slice(0, 16)),
-                mkDel("刪除系列", "確認刪除整個系列？", ""));
-  } else {
-    acts.append(mkDel("刪除", "確認刪除？", ""));
+    if (ev.rrule) {
+      acts.append(mkDel("刪除這次", "確認取消這一次？", ev.start.slice(0, 16)),
+                  mkDel("刪除系列", "確認刪除整個系列？", ""));
+    } else {
+      acts.append(mkDel("刪除", "確認刪除？", ""));
+    }
+    const edit = el("button", "btn primary", "編輯") as HTMLButtonElement;
+    edit.onclick = () => { ov.remove(); openForm(ev); };
+    acts.append(edit);
   }
-  const edit = el("button", "btn primary", "編輯") as HTMLButtonElement;
-  edit.onclick = () => { ov.remove(); openForm(ev); };
   const close = el("button", "btn", "關閉") as HTMLButtonElement;
   close.onclick = () => ov.remove();
-  acts.append(edit, close);
+  acts.append(close);
   card.appendChild(acts);
   ov.appendChild(card);
 }
@@ -796,11 +931,15 @@ app.onteardown = async () => ({});
 
 app.ontoolinput = (params) => {
   // 任何行事曆工具（show_calendar/agenda/list_events/book…）的參數決定初始檢視範圍
-  const a = params.arguments as { start?: string; end?: string; days?: number } | undefined;
+  const a = params.arguments as { start?: string; end?: string; days?: number; person?: string | string[] } | undefined;
   if (a?.start) {
     const d = parseDT(a.start);
     if (!isNaN(d.getTime())) anchor = d;
   }
+  // 啟動工具帶了 person 就種進 personArg，讓初始畫面就疊加顯示這些人
+  const p = a?.person;
+  if (typeof p === "string" && p.trim()) personArg = p.trim();
+  else if (Array.isArray(p) && p.length) personArg = p.join(",");
   let span = a?.days ?? 0;
   if (a?.start && a?.end) {
     const s = parseDT(a.start), e = parseDT(a.end);
@@ -817,7 +956,7 @@ app.ontoolinput = (params) => {
 app.ontoolresult = (result) => {
   const sc = result.structuredContent as (CalData & { error?: string }) | undefined;
   if (sc?.error) { loading = false; render(); toast("讀取失敗：" + sc.error, true); }
-  else if (sc?.events) { data = sc; loading = false; render(); }
+  else if (sc?.events) { data = sc; normalizePersonArg(); loading = false; render(); }
   else fetchData(true);  // 可能是模型做了異動（book/update…），強制重抓
 };
 
