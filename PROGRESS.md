@@ -1,6 +1,18 @@
 # m2k 行事曆工具組 — 進度與待辦
 
-最後更新：2026-07-07（程式碼修正 + 目錄結構調整）
+最後更新：2026-09-21（使用者腳本合併 + 他人行事曆走排程端點）
+
+## 2026-09-21 修正紀錄
+- 兩支使用者腳本合併成一支 `userscripts/m2k-calendar.user.js`：排會議面板與多人看板
+  改成同一面板的兩個頁籤，單一入口、共用搜人與通訊錄邏輯。
+- 改用**排程端點**看任何同事的完整行事曆（不必對方分享），排會議面板新增
+  「查看與會者空檔」：一人一列的週時間軸 + 共同空檔列，點一下回填日期時間。
+- 修掉看板的時間偏移 bug：排程端點的 `dtstart`/`dtend` 已是 epoch 秒，
+  原本又加了一次 offset（且 offset 有時是字串 `"28800"`）。
+- CLI/MCP 的 `find_free_slots` 帶 attendees 時改成明講此站台不支援，
+  引導到 webmail 使用者腳本；連同無用的 `freebusy_others()` 一併刪除。
+- 新增 `CONTEXT.md`（領域語彙）與 `docs/adr/0001-others-calendar-only-in-userscript.md`
+  （他人行事曆只在使用者腳本實作的決策紀錄）。
 
 ## 2026-07-07 修正紀錄
 - `m2kcal.py` 可預期錯誤改丟 `M2KError`（原 `sys.exit` 會殺掉 MCP server）；CLI 於 `main()` 統一接住。
@@ -40,7 +52,13 @@ webmail 使用者腳本做群組排會議與多人看板。
 - **行事曆 feeds API（看多人/他人）**:`/cgi-bin/cal/calsrv/feeds/default/{default|subscribed/N|public/<id>}/events/instances/?starttime=&endtime=`(epoch 秒)。
   - 回傳 `{instances:[{summary,dtstart,dtend,organizer,attendee,...}]}`;同源、沿用登入。
   - 清單：`/cgi-bin/cal/calsrv/feeds/default/{type}/` → `{calendars:[{id,display_name,feeds,color,...}]}`。
-- **分享是「擁有者授權制」**:你能看他人日曆，是對方/管理者發佈授權給你（自動進 subscribed）;**觀看端無法自行訂閱、也無法用 email 直接查他人完整內容**。唯一跨使用者可查的是 **free/busy 忙碌時段**。
+- **分享是「擁有者授權制」**:你能看他人日曆，是對方/管理者發佈授權給你（自動進 subscribed）;**觀看端無法自行訂閱**。但排程端點（見下）不受此限，可用 email 直接查任何同事的完整行程。
+- **排程端點（看任何同事）**:`/cgi-bin/cal/calsrv/schedule/{email}/instances?starttime=&endtime=`(epoch 秒)，對全公司開放、**不必對方分享**，回完整事件（`summary`/`organizer`/`attendee`，`attendee` 含 `attendee_reply_status`:0 未回覆、1 已接受、2 已拒絕、3 暫定）。
+  - 只吃 **webmail cookie**（Basic 認證直打會被 nginx 回 410）→ 只能在瀏覽器內用。
+  - `dtstart`/`dtend` 直接是 **epoch 秒**，不可再加 offset（`offset` 有時是字串 `"28800"`，加了會整批偏移）。
+  - 實測（2026-09-21，對未分享同事）：查詢窗用**區間重疊**比對，起點落在事件中間仍回傳，跨日請假不會漏、窗不必前推。
+    不存在的帳號回 HTTP 200、`rspCode=-102`、無 instances。feeds 清單裡**沒有 email**，自己的 email 只能問使用者。
+    `attendee_reply_status` 2/3 的對應仍是從樣本推的，探測期間沒有 2/3 的事件可核對。
 - **加與會者、通知**:CalDAV 無排程（`schedule-outbox` 404）→ 與會者只記錄、不自動通知。要通知走 webmail 原生「會議排程」流程（有「寄送通知信」）。
 
 ## 交付物（檔案）
@@ -48,8 +66,7 @@ webmail 使用者腳本做群組排會議與多人看板。
 |---|---|---|
 | `src/m2kcal.py` | 行事曆 CLI（CalDAV）:cals/agenda/list/**board**/book/raw/diag | ✅ 真實環境驗證（讀+寫+看板） |
 | `src/m2kgroup.py` | 通訊錄群組展開 CLI（需帶 session token） | ✅ 語法+離線測試（實務被腳本取代） |
-| `userscripts/m2k-group-book.user.js` | webmail 使用者腳本：搜人(autocomplete)/搜部門展開/貼email → 填原生排程表單一鍵建立 | ✅ 對真實頁面實測 |
-| `userscripts/m2k-multi-calendar-board.user.js` | webmail 使用者腳本：多人/他人/公用行事曆合併看板 | ✅ 資料流程+渲染實測 |
+| `userscripts/m2k-calendar.user.js` | webmail 使用者腳本：排會議（搜人/搜部門遞迴/貼 email、查與會者空檔與共同空檔、一鍵建立）＋ 多人看板（可用 email 加人、不必對方分享） | ✅ 離線測試 + 實機探測 |
 | `src/m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install mcp[cli]`） |
 | `skill/SKILL.md` | m2k-calendar skill（供 Settings ▸ Capabilities 匯入） | ✅ |
 | `tests/test_m2k.py` | 離線單元測試 | ✅ 30 項全過 |
@@ -66,7 +83,9 @@ webmail 使用者腳本做群組排會議與多人看板。
 ## 已知限制
 1. **book 會回 500 但實際成功** → 已用 GET 驗證繞過（非 bug，是 Mail2000 後端通知步驟）。
 2. **純郵件群組展不開**——資料源不開放，無解。
-3. **看他人行事曆需對方先分享**;無法用 email 臨時查完整內容（僅 free/busy 可跨查）。
+3. **看他人完整行事曆不必對方分享**（走排程端點），但**只能在 webmail 內**（使用者腳本，
+   需登入 cookie）;CLI / MCP 不支援查他人，`find_free_slots` 帶 attendees 會直接回錯誤說明。
+   決策見 `docs/adr/0001-others-calendar-only-in-userscript.md`。
 4. **多層部門**已遞迴展開（本部門 + 所有子孫部門，跨部門去重）;每個部門一支請求，節點上限 300。搜部門時頂層沒中才搜整棵樹（部門多時要幾十秒，跑完快取）。
 5. **GIL 警告**:Python 3.13t + lxml 的環境警告，加 `PYTHON_GIL=0` 可消，無害。
 6. **`mcp` 套件 2.x 不相容**:2.x 移除了 `mcp.server.fastmcp`，server 會直接啟動失敗;
@@ -76,15 +95,18 @@ webmail 使用者腳本做群組排會議與多人看板。
    警告用 thread-local 隔離，不會混到別的使用者。
 
 ## 待辦（TODO）
-- [ ] 決定並實作跨使用者查詢：**輸入 email 看 free/busy 忙碌時段**（唯一可行的臨時查）。
+- [x] 決定並實作跨使用者查詢：改走**排程端點**查任何同事的完整行事曆（不必對方分享），
+      在使用者腳本內算忙碌時段與共同空檔；不再走 CalDAV free/busy。
 - [ ] 「一鍵發佈我的行事曆」給某人/群組（用 `pubCal*` 端點，分享方向）。
-- [ ] 把兩支使用者腳本（群組排會議 + 多人看板）**合併成一支**、單一入口。
+- [x] 把兩支使用者腳本（群組排會議 + 多人看板）**合併成一支**、單一入口。
 - [ ] 群組 book 通知：展開成員後**逐一寄 .ics 邀請信**（或走原生排程流程）。
 - [ ] CLI 加 `delete` 指令清理測試/舊事件。
 - [x] 多層部門**遞迴展開**子部門成員（會多打幾支請求）。
 - [x] 把 CalDAV 查詢/book 包成 **MCP**(`m2k_mcp_server.py`)。
 - [x] 產出 **Skill**(`skill/SKILL.md`)。
 - [ ] （選）腳本內靜音 GIL 警告，免每次加 `PYTHON_GIL=0`。
+- [ ] MCP 查他人行事曆：需瀏覽器 cookie;若要做，**cookie 只在 client 端持有、伺服器不儲存**
+      （登入是 SAML，無法用帳密換 cookie）。
 - [x] MCP 公用化：`--http` 啟動 streamable-http，認證採「每請求帶各自的應用程式專用密碼
       （Basic over HTTPS，pass-through 到 CalDAV）」，伺服器不保存憑證；stdio 模式並存。
       已實測：stdio 與 HTTP 兩模式工具呼叫、無/壞 Authorization 拒絕、假憑證轉拋 CalDAV 401。

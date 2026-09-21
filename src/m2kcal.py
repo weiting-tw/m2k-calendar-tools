@@ -1079,63 +1079,6 @@ def free_slots(busy, start, end, duration_min=60,
             if (e0 - s0).total_seconds() >= duration_min * 60]
 
 
-def freebusy_others(auth, principal, emails, s, e):
-    """RFC 6638 排程 free-busy：POST VFREEBUSY 到自己的 schedule-outbox，
-    查多位使用者的忙碌時段。回 {email: [(start,end)…台北 naive]}。
-    Mail2000 舊站台可能整個不支援（schedule-outbox 404）——失敗丟 M2KError，
-    呼叫端據此回報「此伺服器不支援查他人空檔」。"""
-    import requests
-    from xml.etree import ElementTree as ET
-    url, user, pwd = auth
-    # 1) PROPFIND principal 找 schedule-outbox-URL
-    body = ('<?xml version="1.0"?><propfind xmlns="DAV:">'
-            '<prop><outbox xmlns="urn:ietf:params:xml:ns:caldav" '
-            'xmlns:c="urn:ietf:params:xml:ns:caldav"/>'
-            '<c:schedule-outbox-URL xmlns:c="urn:ietf:params:xml:ns:caldav"/>'
-            '</prop></propfind>')
-    r = requests.request("PROPFIND", str(principal.url), data=body.encode(),
-                         headers={"Depth": "0", "Content-Type": "application/xml"},
-                         auth=(user, pwd), timeout=30)
-    m = re.search(r"<[^>]*schedule-outbox-URL[^>]*>\s*<[^>]*href[^>]*>([^<]+)<",
-                  r.text or "", re.I)
-    if r.status_code >= 400 or not m:
-        raise M2KError(f"此伺服器不支援排程 free-busy（找不到 schedule-outbox，"
-                       f"PROPFIND HTTP {r.status_code}）。")
-    from urllib.parse import urljoin
-    outbox = urljoin(str(principal.url), m.group(1).strip())
-    # 2) POST VFREEBUSY（iTIP REQUEST）
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    att_lines = "".join(f"ATTENDEE:mailto:{_line_safe(a)}\r\n" for a in emails)
-    vfb = ("BEGIN:VCALENDAR\r\nPRODID:-//m2kcal//CalDAV CLI//EN\r\nVERSION:2.0\r\n"
-           "METHOD:REQUEST\r\nBEGIN:VFREEBUSY\r\n"
-           f"UID:{uuid.uuid4()}\r\nDTSTAMP:{stamp}\r\n"
-           f"DTSTART:{_zulu(s)}\r\nDTEND:{_zulu(e)}\r\n"
-           f"ORGANIZER:mailto:{_line_safe(user)}\r\n{att_lines}"
-           "END:VFREEBUSY\r\nEND:VCALENDAR\r\n")
-    r2 = requests.post(outbox, data=vfb.encode("utf-8"),
-                       headers={"Content-Type": "text/calendar; charset=utf-8"},
-                       auth=(user, pwd), timeout=30)
-    if r2.status_code >= 400:
-        raise M2KError(f"此伺服器不支援排程 free-busy（outbox POST HTTP {r2.status_code}）。")
-    # 3) 解析 schedule-response：每個 response 一位 attendee 的 VFREEBUSY
-    out = {}
-    try:
-        root = ET.fromstring(r2.text)
-    except ET.ParseError:
-        raise M2KError("排程 free-busy 回應不是合法 XML，無法解析。")
-    ns = {"C": "urn:ietf:params:xml:ns:caldav"}
-    for resp in root.findall(".//C:response", ns):
-        rcpt = resp.find(".//C:recipient", ns)
-        cdata = resp.find(".//C:calendar-data", ns)
-        email = re.sub(r"^mailto:", "", "".join(rcpt.itertext()).strip(),
-                       flags=re.I) if rcpt is not None else ""
-        if email and cdata is not None and cdata.text:
-            out[email.lower()] = parse_freebusy(cdata.text)
-    if not out:
-        raise M2KError("排程 free-busy 回應裡沒有任何與會者資料。")
-    return out
-
-
 def _mk_attendee(email):
     from icalendar.prop import vCalAddress, vText
     a = vCalAddress("mailto:" + email)

@@ -123,16 +123,6 @@ def t_calendar_param():
     return f"可用行事曆: {', '.join(names)}；名稱錯誤時明確報錯"
 
 
-@step("多人 free-busy（RFC 6638 outbox 探測）")
-def t_freebusy_others():
-    me = m2kcal.creds()[1]
-    out = srv.find_free_slots(duration_minutes=30, days=3, attendees=[me])
-    assert not out.startswith("錯誤：free-busy 查詢失敗"), out
-    if out.startswith("錯誤"):
-        return f"伺服器不支援（如預期優雅回報）: {out.splitlines()[0]}"
-    return "伺服器支援排程 free-busy！共同空檔查詢可用"
-
-
 @step("拆分系列 from_occurrence（改此次及以後）")
 def t_split_series():
     out = srv.book(f"{PFX} 週會拆分", _tomorrow(19, 0), _tomorrow(19, 30),
@@ -250,7 +240,7 @@ def t_parse_health():
 if __name__ == "__main__":
     steps = [t_parse_health,
              t_multiline_desc, t_all_day, t_rrule, t_reminder,
-             t_get_event, t_calendar_param, t_freebusy_others,
+             t_get_event, t_calendar_param,
              t_split_series, t_invitations]
     try:
         for fn in steps:

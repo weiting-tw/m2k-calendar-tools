@@ -21,14 +21,14 @@ skill/        m2k-calendar skill（供 Claude 匯入）
 
 | 檔案 | 用途 | 認證 | 狀態 |
 |---|---|---|---|
-| `userscripts/m2k-group-book.user.js` | **webmail 使用者腳本**：部門遞迴展開 + 批次加入與會者 | 沿用瀏覽器登入（同源、免 CORS、免 token） | ✅ 離線 26 項 + 實機 10 項斷言 |
-| `userscripts/m2k-multi-calendar-board.user.js` | webmail 使用者腳本：多人/他人行事曆合併看板 | 同上 | ✅ 資料流程+渲染實測 |
+| `userscripts/m2k-calendar.user.js` | **webmail 使用者腳本**：排會議（搜人/搜部門遞迴/貼 email 批次加與會者、查看所有與會者忙碌時段與共同空檔、一鍵建立）＋ 多人看板（可用 email 加人、不必對方分享） | 沿用瀏覽器登入（同源、免 CORS、免 token） | ✅ 離線 69 項 + 排程端點實機探測；⏳ 時間軸畫面待實機看一次 |
 | `src/m2kcal.py` | 行事曆 CLI：查詢 / book / 看板 / 加與會者 | CalDAV Basic（需應用程式密碼） | ✅ 真實環境驗證（讀+寫+看板） |
 | `src/m2kgroup.py` | 群組展開 CLI | 需帶瀏覽器 session token（SAML 限制） | ✅ 語法 + 離線測試通過 |
 | `src/m2k_mcp_server.py` | MCP server：讓 Claude 查行程/建會議 | 同 m2kcal（環境變數/.env） | ✅ 語法驗證 |
 | `skill/SKILL.md` | m2k-calendar skill | — | ✅ |
-| `tests/group-book.test.mjs` | 使用者腳本離線測試（jsdom + 假伺服器） | — | ✅ 26 項全過（`npm test`） |
+| `tests/calendar.test.mjs` | 使用者腳本離線測試（jsdom + 假伺服器） | — | ✅ 69 項全過（`npm test`） |
 | `tests/live_adb2_probe.js` | 通訊錄實機迴歸測試（瀏覽器 console 貼上） | 沿用瀏覽器登入 | ✅ 10 項斷言 |
+| `tests/live_schedule_probe.js` | 排程端點實機探測（瀏覽器 console 貼上） | 沿用瀏覽器登入 | ✅ 2026-09-21 對未分享同事實測 6 PASS |
 | `tests/live_attendee_probe.js` | 加入與會者的延遲實測（需手動開好「與會者」頁籤） | 沿用瀏覽器登入 | ⏳ 待跑 |
 | `tests/test_m2k.py` | 離線單元測試（假資料、免帳密） | — | ✅ 只需 `icalendar` |
 | `src/healthcheck.py` | 容器健康檢查（打真實 HTTP，分得出「活著但壞掉」） | — | ✅ 兩種狀態實測 |
@@ -42,19 +42,28 @@ skill/        m2k-calendar skill（供 Claude 匯入）
 
 **安裝**
 1. Chrome 安裝 Tampermonkey 擴充。
-2. Tampermonkey → 新增腳本 → 貼上 `userscripts/m2k-group-book.user.js` 內容 → 存檔。
+2. Tampermonkey → 新增腳本 → 貼上 `userscripts/m2k-calendar.user.js` 內容 → 存檔。
 
 > 新版 Chrome 需額外授權：`chrome://extensions` → Tampermonkey → 詳細資料 → 開「**允許使用者指令碼**」，再重整頁面（這是腳本沒出現最常見的原因）。
 
-**使用（v0.4：面板一站式，全部在排程頁完成）**
-1. 進 Mail2000 →「會議排程」頁，右下「👥 群組排會議」開面板。
+**使用**：面板有兩個頁籤，都在排程頁完成。
+
+**【排會議】**
+1. 進 Mail2000 →「會議排程」頁，右下開「m2k 助手」面板。
 2. **A. 填會議資訊**：標題、日期、開始/結束時間、地點。
 3. **B. 加入與會者**（下拉切換）：
    - **搜姓名（autocomplete）**：邊打邊跳建議（中文 1 字、英文 2 字即觸發），點一下該人就加入，右側顯示「＋加入 / ✓已加」。
    - **搜部門**：打部門代碼 → 按「展開全部並加入」→ **遞迴抓齊該部門與所有子部門的成員**逐一加入（跨部門自動去重）。只要本層的話按旁邊的「僅本層」。
    - 或展開「貼上 email」批次加入。
    - 面板即時顯示「目前與會者：N 人」。
-4. **C. 按「✅ 建立會議」**：自動填入原生表單、勾「寄送通知信」、跳出確認後儲存。
+4. **🕒 查看與會者空檔**：畫出自己 + 所有與會者一人一列的週時間軸，頂端多一列「共同空檔」；
+   點一下任一空檔就直接填回 A 的日期與時間。工作時段固定 09:00–18:00、週一到週五；
+   已拒絕的邀請不算忙碌、暫定用斜紋標示、跨 24 小時以上標「請假/不在」；最多畫 30 人。
+5. **C. 按「✅ 建立會議」**：自動填入原生表單、勾「寄送通知信」、跳出確認後儲存。
+
+**【看板】**
+勾選要看的行事曆，或直接用姓名／部門／email 加人（不必對方先分享），按「產生看板」
+把多人行程併在同一張表上。
 
 **重要：群組信箱 vs 展開**
 - 直接打**群組信箱**只是「一個收件者」,**不會展開**、底下成員收不到 —— 這是原本的問題。
@@ -104,7 +113,8 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 
 `src/m2k_mcp_server.py` 提供工具：
 - 查詢：`agenda`、`list_events`、`search_events`（關鍵字搜標題/地點/描述）、
-  `find_free_slots`（free-busy 找自己的空檔）、`find_person`（模糊人名查 email）、
+  `find_free_slots`（free-busy 找空檔，只查自己；查他人空檔請用 webmail 腳本）、
+  `find_person`（模糊人名查 email）、
   `list_calendars`
 
 **find_person 的資料來源**（自動合併；前兩項零設定、跟著各使用者自己的憑證走，

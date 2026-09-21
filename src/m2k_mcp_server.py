@@ -738,8 +738,12 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     """找空檔（free-busy）。回傳工作時段內長度足夠的可預約時間。
     duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
     day_start/day_end 每天的可排時段；include_weekends 是否含週末；
-    attendees 一併查這些人的忙碌時段、回傳大家都有空的時間
-    （email 清單，可先用 find_person 查；伺服器不支援查他人時會明講）。"""
+    attendees 此站台不支援，帶了會直接回錯誤說明。"""
+    if attendees:
+        return ("錯誤：此站台不支援用 CLI/MCP 查他人空檔"
+                "（CalDAV 沒開排程 free-busy）。請在 webmail 會議排程頁用"
+                "「m2k 助手」使用者腳本的「查看與會者空檔」，"
+                "或只查自己的空檔（不帶 attendees）。")
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -750,20 +754,6 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         fb = cal.freebusy_request(s, e)
         busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
-        others_note = ""
-        if attendees:
-            try:
-                others = m2kcal.freebusy_others(auth, p, attendees, s, e)
-                for em, periods in others.items():
-                    busy += periods
-                missing = [a for a in attendees if a.strip().lower() not in others]
-                if missing:
-                    others_note = ("  ⚠ 查不到這些人的忙碌資料（結果未包含他們）: "
-                                   + ", ".join(missing))
-            except m2kcal.M2KError as err:
-                return (f"錯誤：{err}\n"
-                        "（此伺服器無法查他人空檔時，只能各自用 find_free_slots "
-                        "查自己的，再人工協調。）")
         slots = m2kcal.free_slots(busy, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
     except m2kcal.M2KError as err:
@@ -774,11 +764,8 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         return (f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
                 f"找不到 ≥ {duration_minutes} 分鐘的空檔。")
     wk = "一二三四五六日"
-    who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
-    out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
+    out = [f"{s:%Y-%m-%d} 起 {days} 天，工作時段 {day_start}–{day_end}，"
            f"≥ {duration_minutes} 分鐘的空檔："]
-    if others_note:
-        out.append(others_note)
     cur = None
     for a, b in slots:
         if a.date() != cur:

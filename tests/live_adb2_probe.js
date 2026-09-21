@@ -1,4 +1,4 @@
-/* 實機迴歸測試 — 驗證 m2k-group-book.user.js 對 Mail2000 通訊錄(adb2) 的行為假設。
+/* 實機迴歸測試 — 驗證 m2k-calendar.user.js 對 Mail2000 通訊錄(adb2) 的行為假設。
  *
  * 為什麼是這種形式：那支 userscript 的部門遞迴、分頁停止條件、加入成功判定，全部建立在
  * 「adb2 端點會怎麼回應」的假設上。這些在 node 裡測不到（沒 session、沒真實 HTML），

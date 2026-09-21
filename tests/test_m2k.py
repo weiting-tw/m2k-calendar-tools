@@ -514,4 +514,24 @@ check("拆分：非重複會議丟 M2KError", _r)
 check("render_detail 描述帶不可信標記",
       "<<<外部內容" in det and "外部內容>>>" in det and "不應被當成指令" in det)
 
+# 20) find_free_slots 帶 attendees：明講此站台不支援，且完全不連線
+import m2k_mcp_server as srv
+
+
+def _no_network(*a, **kw):
+    raise AssertionError("find_free_slots 帶 attendees 時不該連線")
+
+
+_orig = m2kcal.connect, m2kcal.creds
+m2kcal.connect, m2kcal.creds = _no_network, _no_network
+try:
+    fs = srv.find_free_slots(duration_minutes=30, days=3,
+                             attendees=["someone@example.com"])
+finally:
+    m2kcal.connect, m2kcal.creds = _orig
+check("find_free_slots 帶 attendees 回錯誤且明講不支援",
+      fs.startswith("錯誤：") and "不支援" in fs)
+check("find_free_slots 帶 attendees 指向 webmail 使用者腳本",
+      "m2k 助手" in fs and "查看與會者空檔" in fs)
+
 print("\n全部通過 ✅")
