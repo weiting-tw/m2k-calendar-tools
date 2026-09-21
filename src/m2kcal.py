@@ -1079,6 +1079,131 @@ def free_slots(busy, start, end, duration_min=60,
             if (e0 - s0).total_seconds() >= duration_min * 60]
 
 
+# ---------- 他人行事曆：webmail 排程端點（需 webmail Cookie） ----------
+# /cgi-bin/cal/calsrv/schedule/{email}/instances 是原生「會議排程」頁查與會者用的端點：
+# 對全公司任何人都回完整事件（不必對方分享），但只吃 webmail 登入 cookie，
+# 拿 CalDAV 的 Basic 認證直打會被 nginx 回 410。登入是 SAML，程式換不到 cookie，
+# 只能由使用者從已登入的瀏覽器複製過來、client 端持有，伺服器用完即丟（見 docs/adr/0002）。
+# 實測 13 個 cookie 裡只有 `key` 是必要的；其餘（m2kuid/m2kps/dt*/rx*）帶不帶都無關。
+M2K_BASE = os.environ.get("M2K_BASE", "https://mail.gss.com.tw")
+SCHED_PATH = "/cgi-bin/cal/calsrv/schedule/"
+MAX_SCHED_PEOPLE = 30          # 一人一支請求，一次最多查幾人
+REPLY_ZH = {0: "未回覆", 1: "已接受", 2: "已拒絕", 3: "暫定"}   # attendee_reply_status（實機樣本推得）
+NO_COOKIE_HINT = ("查他人行事曆需要 webmail Cookie（排程端點不吃 CalDAV 密碼）。"
+                  "從已登入的瀏覽器 DevTools → Application → Cookies → mail.gss.com.tw 複製名為 key 的值，"
+                  "寫成 key=<值>（整串 Cookie 也可以，但只有 key 是必要的）：\n"
+                  "  stdio 模式：設環境變數 M2K_COOKIE；HTTP 模式：請求帶 X-M2K-Cookie 標頭；\n"
+                  "  OAuth 模式：重新連接時在登入頁貼上。Cookie 為短效，過期需重貼。\n"
+                  "或改用 webmail「m2k 助手」使用者腳本的「查看與會者空檔」。")
+
+
+def _epoch(t):
+    """naive 視為台北牆鐘時間 → epoch 秒。"""
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=TW_TZ)
+    return int(t.timestamp())
+
+
+def parse_schedule(data, who):
+    """排程端點 JSON → 事件清單（台北 naive、依開始排序）。
+    每筆 dict(start, end, summary, organizer, status, busy)：
+    status 是 REPLY_ZH 的中文，該人不在與會者名單（自建）為「自建」；
+    busy 依 CONTEXT.md「忙碌時段」：已拒絕不算，其餘（含暫定）都算。
+    dtstart/dtend 直接是 epoch 秒，不可加 offset（實測；offset 有時是字串）。"""
+    import json
+    code = int(data.get("rspCode") or 0)
+    if code == -100:   # Invalid Session（實測）：cookie 壞了或過期
+        raise M2KError("webmail Cookie 無效或已過期，請從已登入的瀏覽器重新複製 key= 那一個 cookie。")
+    if code == -102:
+        raise M2KError(f"查無此帳號：{who}")
+    if code != 0:
+        raise M2KError(f"排程端點回 rspCode {code} {data.get('rspMsg') or ''}".rstrip())
+    w = who.strip().lower()
+    out = []
+    for i in data.get("instances") or []:
+        try:
+            s0 = dt.datetime.fromtimestamp(int(i["dtstart"]), TW_TZ).replace(tzinfo=None)
+            e0 = dt.datetime.fromtimestamp(int(i.get("dtend") or i["dtstart"]), TW_TZ).replace(tzinfo=None)
+        except (KeyError, TypeError, ValueError) as err:
+            note("排程端點有一筆事件的時間解析失敗，已跳過", err)
+            continue
+        att = i.get("attendee") or []
+        if isinstance(att, str):
+            try:
+                att = json.loads(att)
+            except ValueError:
+                att = []
+        me = next((a for a in att if isinstance(a, dict)
+                   and re.sub(r"^mailto:", "", str(a.get("attendee", "")), flags=re.I).strip().lower() == w), None)
+        status = "自建" if me is None else REPLY_ZH.get(me.get("attendee_reply_status"), "未回覆")
+        out.append({
+            "start": s0, "end": e0,
+            "summary": str(i.get("summary") or "(無標題)"),
+            "organizer": re.sub(r"^mailto:", "", str(i.get("organizer") or ""), flags=re.I),
+            "status": status,
+            "busy": status != "已拒絕",
+        })
+    out.sort(key=lambda x: x["start"])
+    return out
+
+
+def _sched_get(cookie, email, st, et):
+    """實際打排程端點。拆出來讓測試能換掉。回 (status_code, content_type, text)。"""
+    import requests
+    from urllib.parse import quote
+    r = requests.get(M2K_BASE + SCHED_PATH + quote(email, safe="") + "/instances",
+                     params={"starttime": st, "endtime": et},
+                     headers={"Cookie": cookie, "Referer": M2K_BASE + "/",
+                              "User-Agent": "Mozilla/5.0 (m2k-calendar)"},
+                     timeout=20, allow_redirects=False)
+    return r.status_code, r.headers.get("content-type", ""), r.text
+
+
+def fetch_schedule(cookie, email, s, e):
+    """查一位同事在 [s, e) 的行程。沒 cookie、cookie 失效（被導去登入/410/回 HTML）都丟 M2KError 明講。"""
+    import json
+    if not (cookie or "").strip():
+        raise M2KError(NO_COOKIE_HINT)
+    code, ctype, text = _sched_get(cookie.strip(), email, _epoch(s), _epoch(e))
+    if code != 200 or "json" not in ctype.lower():
+        raise M2KError(f"webmail Cookie 無效或已過期（HTTP {code}），請從已登入的瀏覽器重新複製。")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise M2KError("排程端點回應不是 JSON，Cookie 可能已過期。")
+    return parse_schedule(data, email)
+
+
+def busy_periods(events):
+    """排程事件 → 可餵給 free_slots 的 (start, end) 清單。"""
+    return [(ev["start"], ev["end"]) for ev in events if ev["busy"]]
+
+
+def render_schedule(by_person):
+    """{email: 事件清單 或 M2KError} → 依人、依天分組的文字。"""
+    out = []
+    for who, evs in by_person.items():
+        out.append(f"\n👤 {who}")
+        if isinstance(evs, Exception):
+            out.append(f"   ⚠ 查不到：{evs}")
+            continue
+        if not evs:
+            out.append("   （此期間沒有行程）")
+            continue
+        cur = None
+        for ev in evs:
+            if ev["start"].date() != cur:
+                cur = ev["start"].date()
+                out.append(f"   📅 {cur.isoformat()} (週{_WK[cur.weekday()]})")
+            span = (f"{ev['start']:%H:%M}–{ev['end']:%H:%M}"
+                    if ev["end"] - ev["start"] < dt.timedelta(days=1)
+                    else f"{ev['start']:%m/%d %H:%M}–{ev['end']:%m/%d %H:%M}")
+            tag = "" if ev["status"] in ("自建", "已接受") else f" [{ev['status']}]"
+            org = f"  召集:{ev['organizer']}" if ev["organizer"] and ev["organizer"].lower() != who.lower() else ""
+            out.append(f"      {span:<13} {ev['summary']}{tag}{org}")
+    return "\n".join(out).strip() or "（無）"
+
+
 def _mk_attendee(email):
     from icalendar.prop import vCalAddress, vText
     a = vCalAddress("mailto:" + email)

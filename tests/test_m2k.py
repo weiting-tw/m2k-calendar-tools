@@ -514,6 +514,63 @@ check("拆分：非重複會議丟 M2KError", _r)
 check("render_detail 描述帶不可信標記",
       "<<<外部內容" in det and "外部內容>>>" in det and "不應被當成指令" in det)
 
+# 21) 排程端點：parse_schedule / busy_periods / render_schedule / fetch_schedule 錯誤路徑
+_sample = {"rspCode": 0, "rspMsg": "", "instances": [
+    {"dtstart": 1789988400, "dtend": 1789993800, "offset": "28800", "id": 1, "summary": "熱舞社", "organizer": ""},
+    {"dtstart": 1790296200, "dtend": 1790299800, "offset": 0, "id": 2, "summary": "週會",
+     "organizer": "mailto:sec_02@example.com",
+     "attendee": [{"attendee": "mailto:Flora_Hu@example.com", "attendee_reply_status": 2},
+                  {"attendee": "mailto:x@example.com", "attendee_reply_status": 1}]},
+    {"dtstart": 1790209800, "dtend": 1791194400, "offset": 0, "id": 3, "summary": "OFF",
+     "attendee": '[{"attendee":"mailto:flora_hu@example.com","attendee_reply_status":3}]'},
+    {"dtstart": "bad", "dtend": 1, "summary": "壞的"},
+]}
+m2kcal.take_notes()
+ev = m2kcal.parse_schedule(_sample, "flora_hu@example.com")
+check("parse_schedule 解出 3 筆、壞的跳過並留痕", len(ev) == 3 and any("跳過" in n for n in m2kcal.take_notes()))
+check("parse_schedule dtstart 直接是 epoch 秒、不加 offset（熱舞社 19:00）",
+      ev[0]["summary"] == "熱舞社" and ev[0]["start"].hour == 19 and ev[0]["start"].minute == 0)
+check("parse_schedule 自建事件 status=自建且算忙碌", ev[0]["status"] == "自建" and ev[0]["busy"])
+check("parse_schedule 依 attendee_reply_status 對應（2=已拒絕不算忙碌，比對 mailto/大小寫不敏感）",
+      ev[2]["summary"] == "週會" and ev[2]["status"] == "已拒絕" and not ev[2]["busy"])
+check("parse_schedule attendee 是 JSON 字串也解得開（3=暫定、算忙碌）",
+      ev[1]["summary"] == "OFF" and ev[1]["status"] == "暫定" and ev[1]["busy"])
+check("busy_periods 排除已拒絕", len(m2kcal.busy_periods(ev)) == 2)
+rs = m2kcal.render_schedule({"flora_hu@example.com": ev, "ghost@example.com": m2kcal.M2KError("查無此帳號：ghost")})
+check("render_schedule 跨日事件顯示日期範圍、狀態標記、召集人", "09/24 08:30–10/05 18:00" in rs and "[暫定]" in rs
+      and "[已拒絕]" in rs and "召集:sec_02@example.com" in rs)
+check("render_schedule 已接受/自建不加標記", "熱舞社\n" in rs + "\n" and "[自建]" not in rs)
+check("render_schedule 查不到的人列出原因", "⚠ 查不到：查無此帳號：ghost" in rs)
+_r = False
+try: m2kcal.parse_schedule({"rspCode": -102}, "nobody@example.com")
+except m2kcal.M2KError as e: _r = "查無此帳號" in str(e)
+check("parse_schedule rspCode -102 → 查無此帳號", _r)
+_r = False
+try: m2kcal.parse_schedule({"rspCode": -100, "rspMsg": "Invalid Session"}, "a@example.com")
+except m2kcal.M2KError as e: _r = "無效或已過期" in str(e) and "key=" in str(e)
+check("parse_schedule rspCode -100 → Cookie 無效或已過期，指名 key cookie", _r)
+_r = False
+try: m2kcal.fetch_schedule("", "a@example.com", dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22))
+except m2kcal.M2KError as e: _r = "M2K_COOKIE" in str(e)
+check("fetch_schedule 沒 cookie → 說明怎麼提供", _r)
+_calls = []
+def _fake_get(cookie, email, st, et):
+    _calls.append((cookie, email, st, et))
+    return 410, "text/html", "<html>410</html>"
+_orig_get = m2kcal._sched_get; m2kcal._sched_get = _fake_get
+try:
+    _r = False
+    try: m2kcal.fetch_schedule(" ck=1 ", "a@example.com", dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22))
+    except m2kcal.M2KError as e: _r = "無效或已過期" in str(e) and "410" in str(e)
+    check("fetch_schedule 被 nginx 410/回 HTML → 明講 Cookie 無效", _r)
+    check("fetch_schedule 會 strip cookie，naive 時間視為台北換成 epoch",
+          _calls[0][0] == "ck=1" and _calls[0][2] == 1789920000 and _calls[0][3] == 1790006400)
+    m2kcal._sched_get = lambda c, e, st, et: (200, "application/json; charset=utf-8", "{\"rspCode\":0,\"instances\":[]}")
+    check("fetch_schedule 正常 JSON → 空清單", m2kcal.fetch_schedule("ck", "a@example.com",
+          dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22)) == [])
+finally:
+    m2kcal._sched_get = _orig_get
+
 # 20) find_free_slots 帶 attendees：明講此站台不支援，且完全不連線
 # 需要 mcp 套件才 import 得動 server（它缺套件時會直接 sys.exit，所以先探 mcp 本身）；
 # CI 只裝 icalendar，沒有就明講略過，不假裝通過
@@ -528,15 +585,66 @@ if srv:
         raise AssertionError("find_free_slots 帶 attendees 時不該連線")
 
     _orig = m2kcal.connect, m2kcal.creds
+    _saved_ck = os.environ.pop("M2K_COOKIE", None)   # .env 可能真的有 cookie，這段要測「沒有」
     m2kcal.connect, m2kcal.creds = _no_network, _no_network
     try:
         fs = srv.find_free_slots(duration_minutes=30, days=3,
                                  attendees=["someone@example.com"])
     finally:
         m2kcal.connect, m2kcal.creds = _orig
-    check("find_free_slots 帶 attendees 回錯誤且明講不支援",
-          fs.startswith("錯誤：") and "不支援" in fs)
-    check("find_free_slots 帶 attendees 指向 webmail 使用者腳本",
-          "m2k 助手" in fs and "查看與會者空檔" in fs)
+        if _saved_ck is not None: os.environ["M2K_COOKIE"] = _saved_ck
+    check("find_free_slots 帶 attendees 但沒 Cookie → 回錯誤且說明怎麼提供 Cookie",
+          fs.startswith("錯誤：") and "M2K_COOKIE" in fs and "X-M2K-Cookie" in fs)
+    check("find_free_slots 沒 Cookie 也指向 webmail 使用者腳本", "m2k 助手" in fs)
+
+# 22) MCP others_agenda / find_free_slots 帶 attendees：有 Cookie 時走排程端點（假的 fetch）
+if srv:
+    _fake_sched = {
+        "a@example.com": [
+            {"start": dt.datetime(2026, 9, 21, 9), "end": dt.datetime(2026, 9, 21, 10), "summary": "A 早會",
+             "organizer": "boss@example.com", "status": "已接受", "busy": True},
+            {"start": dt.datetime(2026, 9, 21, 14), "end": dt.datetime(2026, 9, 21, 15), "summary": "A 拒絕的",
+             "organizer": "", "status": "已拒絕", "busy": False},
+        ],
+    }
+    def _fake_fetch(cookie, email, s, e):
+        assert cookie == "ck=1", "要把 cookie 原樣傳下去"
+        if email not in _fake_sched:
+            raise m2kcal.M2KError(f"查無此帳號：{email}")
+        return _fake_sched[email]
+    class _FakeFB:
+        data = "BEGIN:VFREEBUSY\r\nFREEBUSY:20260921T020000Z/20260921T030000Z\r\nEND:VFREEBUSY\r\n"  # 自己 10:00–11:00 忙
+    class _FakeCal:
+        def freebusy_request(self, s, e): return _FakeFB()
+    _orig = (m2kcal.fetch_schedule, m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds,
+             os.environ.get("M2K_COOKIE"))
+    m2kcal.fetch_schedule = _fake_fetch
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _FakeCal()
+    m2kcal.creds = lambda: ("u", "user", "pw")
+    os.environ["M2K_COOKIE"] = "ck=1"
+    try:
+        oa = srv.others_agenda(["a@example.com", "ghost@example.com", "A@example.com"], start="2026-09-21", days=1)
+        check("others_agenda 依人分組、去重且大小寫不敏感", oa.count("👤") == 2 and "2 人" in oa)
+        check("others_agenda 顯示行程與回覆狀態", "A 早會" in oa and "[已拒絕]" in oa and "召集:boss@example.com" in oa)
+        check("others_agenda 查不到的人明講原因", "ghost@example.com" in oa and "查無此帳號" in oa)
+        fs2 = srv.find_free_slots(duration_minutes=60, start="2026-09-21", days=1,
+                                  attendees=["a@example.com", "ghost@example.com"])
+        check("find_free_slots 有 Cookie → 扣掉對方忙碌（09–10）與自己忙碌（10–11），11:00 起有空",
+              "\n   11:00–" in fs2 and "\n   09:00–" not in fs2 and "\n   10:00–" not in fs2)
+        check("find_free_slots 對方已拒絕的會議不算忙碌（14–15 不被扣掉）",
+              "11:00–18:00" in fs2)
+        check("find_free_slots 有人查不到 → 開頭警告且結果不含他", "查不到" in fs2 and "ghost@example.com" in fs2)
+        oa2 = srv.others_agenda([], days=1)
+        check("others_agenda 沒給 email → 錯誤", oa2.startswith("錯誤："))
+    finally:
+        m2kcal.fetch_schedule, m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds = _orig[:4]
+        if _orig[4] is None: os.environ.pop("M2K_COOKIE", None)
+        else: os.environ["M2K_COOKIE"] = _orig[4]
+    _saved = os.environ.pop("M2K_COOKIE", None)
+    try:
+        check("others_agenda 沒 Cookie → 說明怎麼提供", "M2K_COOKIE" in srv.others_agenda(["a@example.com"]))
+    finally:
+        if _saved is not None: os.environ["M2K_COOKIE"] = _saved
 
 print("\n全部通過 ✅")

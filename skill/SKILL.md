@@ -16,7 +16,8 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 |---|---|
 | 查自己行程 / 建會議 / 改會議 / 刪會議（Claude 直接做） | MCP 工具：`agenda` / `list_events` / `book` / `update_event` / `delete_event` / `list_calendars` |
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
-| 找自己的空檔（「明天哪裡有空 1 小時」） | MCP 工具：`find_free_slots`（只查自己；查他人空檔請用 webmail 腳本） |
+| 找空檔（「明天哪裡有空 1 小時」「找我跟 A、B 都有空的時間」） | MCP 工具：`find_free_slots`（帶 `attendees` 需 webmail Cookie，見下） |
+| 看同事的行程（「pekka 下週有什麼會」） | MCP 工具：`others_agenda`（需 webmail Cookie；沒有時會回說明，可改用 webmail 腳本） |
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
 | 建重複會議 / 加提醒 | `book` 的 `repeat`（daily/weekly/monthly）+ `repeat_until`、`reminder_minutes` |
 | 互動行事曆畫面（週/月檢視、UI 上直接增改刪、拖曳改時間） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI；agenda/list_events/book/update_event/respond_event/delete_event 也會帶出同一個畫面） |
@@ -64,5 +65,5 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 ## 已知限制
 
 - 純郵件群組（distribution list，如 xxx@example.com）無法展開成員（資料源不開放）。
-- MCP 只能看你自己與對方已分享給你的行事曆。看任何同事的完整行程請用 webmail 使用者腳本（排程端點只吃 webmail cookie，MCP 走 CalDAV 認證打不到）。
+- 看同事行程（`others_agenda`、`find_free_slots` 帶 attendees）走 webmail 排程端點，需要使用者提供 webmail Cookie（stdio：`M2K_COOKIE`；HTTP：`X-M2K-Cookie`；OAuth：登入頁貼上）。工具回「需要 webmail Cookie」時，照它的說明請使用者提供，或改用 webmail 使用者腳本。Cookie 短效，回「無效或已過期」就請使用者重貼。
 - 使用者腳本必須裝在 webmail（Tampermonkey），且新版 Chrome 需開「允許使用者指令碼」。

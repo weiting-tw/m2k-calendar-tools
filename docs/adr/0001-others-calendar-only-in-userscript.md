@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0002
 ---
 
 # 他人行事曆只在 webmail 使用者腳本實作，CLI/MCP 明講不支援

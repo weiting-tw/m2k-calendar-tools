@@ -3,7 +3,9 @@
 m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議（走 CalDAV）。
 
 範圍：查詢自己的行事曆 + 建立會議（CalDAV，應用程式專用密碼）。
-      「看他人行事曆」需 webmail 登入 session（SAML），MCP 拿不到 → 用使用者腳本。
+      「看他人行事曆」（others_agenda、find_free_slots 帶 attendees）走 webmail 排程端點，
+      需要使用者從已登入瀏覽器複製的 webmail Cookie：stdio 用 M2K_COOKIE、HTTP 用
+      X-M2K-Cookie 標頭、OAuth 在登入頁貼上。Cookie 只在 client 端/token 內持有，伺服器不存。
 
 安裝：
   pip install "mcp[cli]" caldav icalendar requests
@@ -91,6 +93,40 @@ def _auth(ctx):
         return None
     user, pwd = m2kcal.parse_basic_auth(req.headers.get("authorization", ""))
     return (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), user, pwd)
+
+
+COOKIE_HEADER = "x-m2k-cookie"
+
+
+def _cookie(ctx):
+    """本次呼叫的 webmail Cookie（查他人行事曆用），依模式：
+    OAuth 模式 → 登入時貼在登入頁、加密封在 token 裡的 cookie。
+    HTTP 模式  → 該請求的 X-M2K-Cookie 標頭，不回退到環境變數（同 _auth 的理由）。
+    stdio 模式 → 環境變數 M2K_COOKIE。沒有就回空字串，由呼叫端明講。"""
+    tok = get_access_token()
+    if tok is not None and getattr(tok, "m2k_user", ""):
+        return getattr(tok, "m2k_cookie", "") or ""
+    req = getattr(ctx.request_context, "request", None) if ctx else None
+    if req is not None:
+        return req.headers.get(COOKIE_HEADER, "")
+    return os.environ.get("M2K_COOKIE", "")
+
+
+def _others_schedule(cookie, emails, s, e):
+    """逐一查同事行程。回 ({email: 事件清單 或 M2KError}, 被人數上限截掉的 email 清單)。"""
+    seen, todo = set(), []
+    for em in emails:
+        k = (em or "").strip().lower()
+        if k and k not in seen:
+            seen.add(k); todo.append(k)
+    shown, dropped = todo[:m2kcal.MAX_SCHED_PEOPLE], todo[m2kcal.MAX_SCHED_PEOPLE:]
+    out = {}
+    for em in shown:
+        try:
+            out[em] = m2kcal.fetch_schedule(cookie, em, s, e)
+        except m2kcal.M2KError as err:
+            out[em] = err
+    return out, dropped
 
 
 def _cal(auth, name=""):
@@ -738,12 +774,11 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     """找空檔（free-busy）。回傳工作時段內長度足夠的可預約時間。
     duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
     day_start/day_end 每天的可排時段；include_weekends 是否含週末；
-    attendees 此站台不支援，帶了會直接回錯誤說明。"""
-    if attendees:
-        return ("錯誤：此站台不支援用 CLI/MCP 查他人空檔"
-                "（CalDAV 沒開排程 free-busy）。請在 webmail 會議排程頁用"
-                "「m2k 助手」使用者腳本的「查看與會者空檔」，"
-                "或只查自己的空檔（不帶 attendees）。")
+    attendees 一併扣掉這些同事的忙碌時段、回傳大家都有空的時間（email 清單，
+    人名先用 find_person 查）。查他人需要 webmail Cookie，沒有時會明講怎麼提供。"""
+    cookie = _cookie(ctx) if attendees else ""
+    if attendees and not cookie.strip():
+        return "錯誤：" + m2kcal.NO_COOKIE_HINT
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -754,6 +789,19 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         fb = cal.freebusy_request(s, e)
         busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
+        others_note = []
+        if attendees:
+            others, dropped = _others_schedule(cookie, attendees, s, e)
+            failed = [em for em, evs in others.items() if isinstance(evs, Exception)]
+            for em, evs in others.items():
+                if not isinstance(evs, Exception):
+                    busy += m2kcal.busy_periods(evs)
+            # 有人查不到就不能說「大家都有空」——先講清楚，結果照給
+            if failed:
+                others_note.append("⚠ 這些人查不到，結果不含他們：" + "；".join(
+                    f"{em}（{others[em]}）" for em in failed))
+            if dropped:
+                others_note.append(f"⚠ 一次最多查 {m2kcal.MAX_SCHED_PEOPLE} 人，未計入：" + ", ".join(dropped))
         slots = m2kcal.free_slots(busy, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
     except m2kcal.M2KError as err:
@@ -761,11 +809,12 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     except Exception as err:
         return f"錯誤：free-busy 查詢失敗：{err}"
     if not slots:
-        return (f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
-                f"找不到 ≥ {duration_minutes} 分鐘的空檔。")
+        return "\n".join([f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
+                          f"找不到 ≥ {duration_minutes} 分鐘的空檔。"] + others_note)
     wk = "一二三四五六日"
-    out = [f"{s:%Y-%m-%d} 起 {days} 天，工作時段 {day_start}–{day_end}，"
-           f"≥ {duration_minutes} 分鐘的空檔："]
+    who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
+    out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
+           f"≥ {duration_minutes} 分鐘的空檔："] + others_note
     cur = None
     for a, b in slots:
         if a.date() != cur:
@@ -774,6 +823,30 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         mins = int((b - a).total_seconds() // 60)
         out.append(f"   {a:%H:%M}–{b:%H:%M}（{mins} 分鐘）")
     return "\n".join(out)
+
+
+def others_agenda(emails: list[str], start: str = "", days: int = 7,
+                  ctx: Context = None) -> str:
+    """看其他同事的行程（不必對方分享行事曆）。emails 為 email 清單（人名先用
+    find_person 查），start 'YYYY-MM-DD' 預設今天，看 days 天（預設 7）。
+    回傳依人、依天分組的行程，含對方的回覆狀態（已拒絕/暫定/未回覆）。
+    需要 webmail Cookie；沒有時會明講怎麼提供。"""
+    cookie = _cookie(ctx)
+    if not cookie.strip():
+        return "錯誤：" + m2kcal.NO_COOKIE_HINT
+    if not emails:
+        return "錯誤：請給至少一個 email。"
+    try:
+        s = m2kcal.parse_when(start) if start else dt.datetime.now()
+        s = s.replace(hour=0, minute=0, second=0, microsecond=0)
+        e = s + dt.timedelta(days=days)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    others, dropped = _others_schedule(cookie, emails, s, e)
+    head = f"{s:%Y-%m-%d} ～ {e - dt.timedelta(days=1):%Y-%m-%d}，{len(others)} 人的行程："
+    body = m2kcal.render_schedule(others)
+    tail = (f"\n⚠ 一次最多查 {m2kcal.MAX_SCHED_PEOPLE} 人，未查：" + ", ".join(dropped)) if dropped else ""
+    return head + "\n" + body + tail
 
 
 def _register_calendar_app(server: "FastMCP") -> None:
@@ -849,7 +922,7 @@ def _register_prompts(server: "FastMCP") -> None:
 
 
 TOOLS = (list_calendars, search_events, find_free_slots, find_person,
-         get_event, list_invitations)
+         get_event, list_invitations, others_agenda)
 # 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
 # （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）
 APP_TOOLS = (agenda, list_events, book, update_event, respond_event, delete_event)

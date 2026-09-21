@@ -16,6 +16,7 @@ m2k OAuth bridge — 讓 claude.ai Connectors（手機/網頁版）能連 m2k MC
 
 需要：pip install cryptography（其餘同 MCP server）。
 """
+import datetime as dt
 import json
 import os
 import secrets
@@ -123,16 +124,19 @@ class TokenCrypto:
 class CredAuthorizationCode(AuthorizationCode):
     m2k_user: str = ""
     m2k_pass: str = ""
+    m2k_cookie: str = ""   # 選填：webmail Cookie，查他人行事曆用；同樣只封在 token 裡
 
 
 class CredRefreshToken(RefreshToken):
     m2k_user: str = ""
     m2k_pass: str = ""
+    m2k_cookie: str = ""
 
 
 class CredAccessToken(AccessToken):
     m2k_user: str = ""
     m2k_pass: str = ""
+    m2k_cookie: str = ""
 
 
 def _merge_query(url: str, extra: dict) -> str:
@@ -253,6 +257,9 @@ border-radius:8px;font-size:14px;cursor:pointer}}button:disabled{{background:#94
 <input type="hidden" name="txn" value="{txn}">
 <input name="user" placeholder="帳號（可省略 @{DEFAULT_DOMAIN}）" autocomplete="username" required>
 <input name="password" type="password" placeholder="應用程式專用密碼" autocomplete="current-password" required>
+<details><summary class="note" style="cursor:pointer">選填：webmail Cookie（要查同事行程才需要）</summary>
+<textarea name="cookie" rows="3" placeholder="已登入的 webmail → F12 → Application → Cookies → 複製名為 key 的值，貼成 key=<值>（整串 Cookie 也可以）" style="width:100%;box-sizing:border-box;margin:6px 0;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;padding:8px"></textarea>
+<p class="note">Cookie 為短效，過期時重新連接再貼一次即可。</p></details>
 <button id="sb" type="submit">驗證並授權</button>
 <p class="note">憑證只用來即時驗證並加密封入你的存取權杖，伺服器不儲存。
 撤銷方式：到 webmail 撤銷該應用程式專用密碼。</p>
@@ -325,6 +332,7 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
         user = str(form.get("user", "")).strip()
         # 應用程式專用密碼不含前後空白；strip 掉複製貼上常見的殘留空白/換行
         pwd = str(form.get("password", "")).strip()
+        cookie = " ".join(str(form.get("cookie", "")).split())   # 貼上常帶換行，壓成一行
         if "@" not in user:
             user += "@" + DEFAULT_DOMAIN
         if txn in self._done and self._done[txn] > time.time():
@@ -354,6 +362,14 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
                 return self._page(self._login_html(
                     "", "嘗試次數過多，此授權交易已作廢，請回到用戶端重新連接。"), 429)
             return self._page(self._login_html(txn, "驗證失敗：帳號或應用程式專用密碼不正確。"), 401)
+        if cookie:
+            # 有貼 Cookie 就順手驗一次（查自己一小段），壞的當場退回，免得連上後才發現查不到
+            now = time.time()
+            try:
+                await anyio.to_thread.run_sync(lambda: m2kcal.fetch_schedule(
+                    cookie, user, dt.datetime.fromtimestamp(now), dt.datetime.fromtimestamp(now + 60)))
+            except m2kcal.M2KError as err:
+                return self._page(self._login_html(txn, f"帳密正確，但 webmail Cookie 無效：{err}"), 401)
 
         del self._pending[txn]
         code = secrets.token_urlsafe(32)
@@ -369,6 +385,7 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
             subject=user,
             m2k_user=user,
             m2k_pass=pwd,
+            m2k_cookie=cookie,
         )
         self._done[txn] = time.time() + DONE_TTL  # 記住已完成，舊分頁重送時給正向頁
         extra = {"code": code}
@@ -385,12 +402,16 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
     async def exchange_authorization_code(self, client, authorization_code) -> OAuthToken:
         self._codes.pop(authorization_code.code, None)  # 一次性
         return self._mint(client.client_id, authorization_code.scopes,
-                          authorization_code.m2k_user, authorization_code.m2k_pass)
+                          authorization_code.m2k_user, authorization_code.m2k_pass,
+                          authorization_code.m2k_cookie)
 
     # --- token 發行 / 驗證（無狀態） ---
-    def _mint(self, client_id: str, scopes: list[str], user: str, pwd: str) -> OAuthToken:
+    def _mint(self, client_id: str, scopes: list[str], user: str, pwd: str,
+              cookie: str = "") -> OAuthToken:
         now = int(time.time())
         base = {"c": client_id, "s": scopes, "u": user, "p": pwd}
+        if cookie:
+            base["k"] = cookie
         access = self.crypto.seal({**base, "t": "a", "e": now + ACCESS_TTL})
         refresh = self.crypto.seal({**base, "t": "r", "e": now + REFRESH_TTL})
         return OAuthToken(access_token=access, token_type="Bearer", expires_in=ACCESS_TTL,
@@ -408,13 +429,13 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
             return None
         return CredRefreshToken(token=refresh_token, client_id=d["c"], scopes=d["s"],
                                 expires_at=d["e"], subject=d["u"],
-                                m2k_user=d["u"], m2k_pass=d["p"])
+                                m2k_user=d["u"], m2k_pass=d["p"], m2k_cookie=d.get("k", ""))
 
     async def exchange_refresh_token(self, client, refresh_token, scopes: list[str]) -> OAuthToken:
         if scopes and not set(scopes) <= set(refresh_token.scopes):
             raise TokenError("invalid_scope", "要求的 scope 超出原授權範圍")
         return self._mint(client.client_id, scopes or refresh_token.scopes,
-                          refresh_token.m2k_user, refresh_token.m2k_pass)
+                          refresh_token.m2k_user, refresh_token.m2k_pass, refresh_token.m2k_cookie)
 
     async def load_access_token(self, token: str):
         d = self._open_typed(token, "a")
@@ -422,7 +443,7 @@ code{{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-size:12px;word-b
             return None
         return CredAccessToken(token=token, client_id=d["c"], scopes=d["s"],
                                expires_at=d["e"], subject=d["u"],
-                               m2k_user=d["u"], m2k_pass=d["p"])
+                               m2k_user=d["u"], m2k_pass=d["p"], m2k_cookie=d.get("k", ""))
 
 
 def create(issuer: str, key_path=DEFAULT_KEY_PATH,
