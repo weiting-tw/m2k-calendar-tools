@@ -64,5 +64,5 @@ GSS 的 m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 ## 已知限制
 
 - 純郵件群組（distribution list，如 xxx@example.com）無法展開成員（資料源不開放）。
-- 看他人行事曆需對方先分享/授權；跨使用者只能查 free/busy 忙碌時段。
+- MCP 只能看你自己與對方已分享給你的行事曆。看任何同事的完整行程請用 webmail 使用者腳本（排程端點只吃 webmail cookie，MCP 走 CalDAV 認證打不到）。
 - 使用者腳本必須裝在 webmail（Tampermonkey），且新版 Chrome 需開「允許使用者指令碼」。
