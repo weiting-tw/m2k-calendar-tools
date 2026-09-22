@@ -854,6 +854,60 @@ _srv_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 check("book 不用 url 當 auth 解構的變數名", "url, user, pwd = auth" not in _srv_src)
 check("book 仍把 url 參數傳進 build_ics", "uid=uid, url=url" in _srv_src)
 
+# 25g) parse_schedule 解析失敗的警告要指得出是誰的哪一筆（A7）
+#      只說「有一筆解析失敗」的話，無法判斷影響誰的忙碌時段、也無從追查
+m2kcal.clear_notes()
+_bad_sched = {"rspCode": 0, "instances": [
+    {"dtstart": 1767225600, "dtend": 1767229200, "summary": "正常的會"},
+    {"dtstart": "not-a-number", "summary": "壞掉的會"},
+    {"summary": "沒有時間的會"},
+]}
+_rows = m2kcal.parse_schedule(_bad_sched, "someone@example.com")
+_n = m2kcal.take_notes()
+check("壞資料被跳過但好的留下", len(_rows) == 1)
+check("警告帶上是誰的行程", all("someone@example.com" in x for x in _n))
+check("警告帶上壞掉那筆的識別資訊",
+      any("壞掉的會" in x for x in _n) and any("沒有時間的會" in x for x in _n))
+check("每筆壞資料各記一則", len(_n) == 2)
+
+# 25h) free_slots_ranked：全員沒空時給「少 1 人即可」的次佳解（A8）
+#      13 個人很難全員有空，只回「查無」等於把取捨丟回給人，卻沒給判斷依據
+_d0 = dt.datetime(2026, 7, 6, 0, 0)          # 週一
+_d1 = dt.datetime(2026, 7, 7, 0, 0)
+# A 整個上午忙、B 只有 09-10 忙；10:00 之後兩人都有空
+_busy_by = {
+    "a@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 12, 0))],
+    "b@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 10, 0))],
+}
+_rk = m2kcal.free_slots_ranked(_busy_by, _d0, _d1, duration_min=60,
+                               day_start="09:00", day_end="13:00")
+check("ranked 回的是 (start, end, missing)", _rk and len(_rk[0]) == 3)
+check("全員都有空的時段排最前面", _rk[0][2] == [])
+check("全員時段落在兩人都空的區間", _rk[0][0] >= dt.datetime(2026, 7, 6, 12, 0))
+_partial = [x for x in _rk if x[2]]
+check("有列出「少 1 人」的次佳解", any(len(x[2]) == 1 for x in _partial))
+check("次佳解標得出缺誰",
+      any(x[2] == ["a@example.com"] for x in _partial))
+check("缺人少的排在缺人多的前面",
+      [len(x[2]) for x in _rk] == sorted(len(x[2]) for x in _rk))
+
+# 全員皆忙時仍要給得出次佳解
+_busy_all = {
+    "a@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 13, 0))],
+    "b@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 10, 0))],
+}
+_rk2 = m2kcal.free_slots_ranked(_busy_all, _d0, _d1, duration_min=60,
+                                day_start="09:00", day_end="13:00")
+check("沒有全員時段時不回空手", _rk2 != [])
+check("次佳解指出是 a 擋住", _rk2[0][2] == ["a@example.com"])
+
+check("時長不足的時段不列入",
+      all((x[1] - x[0]).total_seconds() >= 3600 for x in _rk))
+check("max_missing 可限制最多缺幾人",
+      all(len(x[2]) <= 1 for x in m2kcal.free_slots_ranked(
+          _busy_by, _d0, _d1, duration_min=60, day_start="09:00",
+          day_end="13:00", max_missing=1)))
+
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
                              dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")

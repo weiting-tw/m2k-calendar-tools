@@ -1306,6 +1306,54 @@ def parse_freebusy(text):
     return sorted(out)
 
 
+def free_slots_ranked(busy_by_person, start, end, duration_min=60,
+                      day_start="09:00", day_end="18:00", include_weekends=False,
+                      max_missing=None):
+    """人多的時候常常湊不出全員空檔，只回「查無」等於把取捨丟回去卻沒給依據。
+    這個版本連「少幾個人就能開」的時段一起回，並標出是誰擋住。
+
+    busy_by_person: {email: [(start, end), ...]}
+    回 [(slot_start, slot_end, missing)]，missing 是該時段忙的人（空＝全員可），
+    依「缺的人數少→時間早」排序。max_missing 可限制最多缺幾人。
+    """
+    people = list(busy_by_person or {})
+    # 先取沒有任何行程時的可用骨架，日界/週末/工作時段規則跟 free_slots 一致
+    skeleton = free_slots([], start, end, 1, day_start, day_end, include_weekends)
+
+    out = []
+    for ws, we in skeleton:
+        # 用所有人的忙碌邊界把骨架切成小段，每段的「誰忙」是固定的
+        edges = {ws, we}
+        for who in people:
+            for b0, b1 in busy_by_person[who]:
+                if b1 > ws and b0 < we:
+                    edges.add(max(b0, ws))
+                    edges.add(min(b1, we))
+        marks = sorted(edges)
+        segs = []
+        for i in range(len(marks) - 1):
+            a, b = marks[i], marks[i + 1]
+            if b <= a:
+                continue
+            busy_here = sorted(
+                who for who in people
+                if any(b0 < b and b1 > a for b0, b1 in busy_by_person[who]))
+            segs.append([a, b, busy_here])
+        # 相鄰且「缺同一群人」的段落接回去，否則會被切得過碎而湊不出時長
+        merged = []
+        for seg in segs:
+            if merged and merged[-1][2] == seg[2] and merged[-1][1] == seg[0]:
+                merged[-1][1] = seg[1]
+            else:
+                merged.append(seg)
+        for a, b, missing in merged:
+            if (b - a).total_seconds() >= duration_min * 60:
+                if max_missing is None or len(missing) <= max_missing:
+                    out.append((a, b, missing))
+    out.sort(key=lambda x: (len(x[2]), x[0]))
+    return out
+
+
 def free_slots(busy, start, end, duration_min=60,
                day_start="09:00", day_end="18:00", include_weekends=False):
     """純函式：在 [start, end) 每天的工作時段扣除 busy 區間，
@@ -1418,7 +1466,11 @@ def parse_schedule(data, who):
             s0 = dt.datetime.fromtimestamp(int(i["dtstart"]), TW_TZ).replace(tzinfo=None)
             e0 = dt.datetime.fromtimestamp(int(i.get("dtend") or i["dtstart"]), TW_TZ).replace(tzinfo=None)
         except (KeyError, TypeError, ValueError) as err:
-            note("排程端點有一筆事件的時間解析失敗，已跳過", err)
+            # 只說「有一筆解析失敗」的話，沒人判斷得出影響誰的忙碌時段、也無從追查。
+            # 帶上是誰、哪一筆（主旨與原始 dtstart），才有辦法回頭確認。
+            note(f"{who} 的行程有一筆時間解析失敗，已跳過"
+                 f"（主旨「{str(i.get('summary') or '（無主旨）')[:40]}」、"
+                 f"原始 dtstart={i.get('dtstart')!r}）", err)
             continue
         att = i.get("attendee") or []
         if isinstance(att, str):

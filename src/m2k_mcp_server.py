@@ -801,6 +801,24 @@ def _group_mailbox_paths(auth) -> dict:
 _VET_MAX = 80        # 一次最多驗這麼多個，避免超大名單把 book 拖太久
 
 
+def _account_exists(auth, email) -> "bool | None":
+    """問排程端點這個位址有沒有帳號。True/False；拿不到 session 回 None（沒驗）。
+    群組信箱在 CardDAV 裡沒有對應欄位（實測 vCard 只有個人欄位、集合也只有
+    resourcetype），只能由部門名推導；推導出來的東西至少要驗一下存不存在。"""
+    try:
+        cookie = m2kcal.session_cookie(auth)
+    except Exception:
+        return None
+    s0 = dt.datetime.now()
+    try:
+        m2kcal.fetch_schedule(cookie, email, s0, s0 + dt.timedelta(days=1))
+        return True
+    except m2kcal.M2KError as err:
+        return False if "查無此帳號" in str(err) else None
+    except Exception:
+        return None
+
+
 def _missing_accounts(auth, attendees) -> tuple[list[str], bool]:
     """問排程端點哪些位址查無帳號（權威判準，每個約 0.1 秒）。
     回 (查無的位址, 是否真的驗過)。拿不到 webmail session 就回 ([], False)——
@@ -858,28 +876,6 @@ def _dir_groups(auth):
     return groups
 
 
-def _known_addresses(auth) -> set:
-    """使用者自己往來過的位址集合（行事曆歷史＋信件往來），用來判斷推導出的
-    群組信箱是否真的存在——避免把猜的位址當成真的、寄出去退信。"""
-    out = set()
-    try:
-        key = auth[1]
-        hit = _CONTACTS_CACHE.get(key)
-        if hit and time.time() - hit[0] < _CONTACTS_TTL:
-            out |= set(hit[1])
-        else:
-            c = m2kcal.collect_contacts(_cal(auth))
-            _cache_put(_CONTACTS_CACHE, key, c)
-            out |= set(c)
-    except Exception:
-        pass
-    try:
-        out |= set(_mail_contacts(auth))
-    except Exception:
-        pass
-    return out
-
-
 def find_group(name: str, recursive: bool = True, ctx: Context = None) -> str:
     """把（模糊的）群組/部門名（如 'team_a1'）展開成成員 email 名單，供 book 帶入。
     優先查『公司通訊錄的正式部門群組』（CardDAV，用你的應用程式專用密碼即可，
@@ -901,7 +897,6 @@ def find_group(name: str, recursive: bool = True, ctx: Context = None) -> str:
         dm = []
         dir_err = f"{type(e).__name__}: {e}"
     if dm:
-        known = _known_addresses(auth)  # 用來確認群組信箱是否真的存在（見下）
         lines = [f"「{name}」在公司通訊錄找到 {len(dm)} 個部門" +
                  ("（請確認要哪個再 book）：" if len(dm) > 1 else "：")]
         all_groups = _dir_groups(auth)
@@ -936,12 +931,17 @@ def find_group(name: str, recursive: bool = True, ctx: Context = None) -> str:
                 lines.append("  （底下沒有子部門）")
             box = m2kcal.group_mailbox(g["name"], auth[1])
             if box:
-                seen = "（你的往來紀錄中存在）" if box in known else "（推測，未見於你的往來紀錄，不確定是否存在）"
+                # 曾經用「有沒有在往來紀錄裡」判斷，但那會自我污染——打錯的位址
+                # 一旦寄過就永遠算「見過」。改問伺服器。
+                ok = _account_exists(auth, box)
+                seen = ("（伺服器確認存在）" if ok is True else
+                        "（伺服器查無此帳號，別帶進 attendees）" if ok is False else
+                        "（無法驗證，由部門名推導）")
                 lines.append(f"  群組信箱：{box} {seen}")
             lines.append("  成員：" + (", ".join(total) if total else "（讀不到成員）"))
             if total:
                 # 只帶父層群組信箱：子部門的群組信箱與個別成員重疊會讓同一人收好幾份
-                rec = ([box] if box and box in known else []) + total
+                rec = ([box] if box and ok is True else []) + total
                 lines.append("  ✦ book 建議 attendees（直接照抄這串）：" + ", ".join(rec))
         lines.append("\n說明：個別成員放進 attendees 才會每人收到邀請並能回覆出席；群組信箱"
                      "只是一個收件位址、不會展開成員，一起帶可讓群組也留一份紀錄。"
@@ -1131,12 +1131,15 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
         others_note = []
+        busy_by = {}          # {email: [(s,e)]}，湊不出全員空檔時要指得出是誰擋住
         if attendees and cookie:
             others, dropped = _others_schedule(cookie, attendees, s, e, ctx)
             failed = [em for em, evs in others.items() if isinstance(evs, Exception)]
             for em, evs in others.items():
                 if not isinstance(evs, Exception):
-                    busy += m2kcal.busy_periods(evs)
+                    b = m2kcal.busy_periods(evs)
+                    busy += b
+                    busy_by[em] = b
             # 有人查不到就不能說「大家都有空」——先講清楚，結果照給
             if failed:
                 others_note.append("⚠ 這些人查不到，結果不含他們：" + "；".join(
@@ -1154,13 +1157,28 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
                 others_note.append("⚠ 這些人沒有把行事曆分享給你，未納入計算：" + ", ".join(missing))
         slots = m2kcal.free_slots(busy, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
+        # 全員湊不出來時，改給「少幾個人就能開」的次佳解並標出缺誰
+        ranked = []
+        if not slots and busy_by:
+            mine = {"（你）": busy}
+            mine.update(busy_by)
+            ranked = [x for x in m2kcal.free_slots_ranked(
+                mine, s, e, duration_minutes, day_start, day_end,
+                include_weekends, max_missing=2) if x[2]][:8]
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     except Exception as err:
         return f"錯誤：free-busy 查詢失敗：{err}"
     if not slots:
-        return "\n".join([f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
-                          f"找不到 ≥ {duration_minutes} 分鐘的空檔。"] + others_note)
+        head = [f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
+                f"找不到全員都有空的 ≥ {duration_minutes} 分鐘空檔。"] + others_note
+        if ranked:
+            wk0 = "一二三四五六日"
+            head.append("\n最接近的選擇（少這幾位就能開，請自行取捨）：")
+            for a, b, missing in ranked:
+                head.append(f"  {a:%m-%d}(週{wk0[a.weekday()]}) {a:%H:%M}–{b:%H:%M}"
+                            f"  缺 {len(missing)} 位：" + "、".join(missing))
+        return "\n".join(head)
     wk = "一二三四五六日"
     who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
     out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
