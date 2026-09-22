@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 import m2kcal
+import m2kfree
 import m2kgroup
 
 
@@ -271,16 +272,29 @@ fb_text = "\r\n".join([
 busy = m2kcal.parse_freebusy(fb_text)
 check("parse_freebusy 筆數", len(busy) == 3)
 check("parse_freebusy UTC→台北", busy[0][0] == dt.datetime(2026, 7, 8, 10, 0))
-slots = m2kcal.free_slots(busy, dt.datetime(2026, 7, 8), dt.datetime(2026, 7, 9),
-                          duration_min=60, day_start="09:00", day_end="18:00")
+def _fixed_source(by_person):
+    """把固定資料包成 busy_source：模擬「忙碌已經查好了」。"""
+    return lambda people, s0, e0: ({p: by_person.get(p, []) for p in people}, {})
+
+
+def _allfree(by_person, s0, e0, **kw):
+    """只取全員都有空的時段（missing 為空），回 [(start, end)]。"""
+    r = m2kfree.common_free_slots(list(by_person) or ["me@example.com"], s0, e0,
+                                  busy_source=_fixed_source(by_person), **kw)
+    return [(a, b) for a, b, missing in r["slots"] if not missing]
+
+
+slots = _allfree({"me@example.com": busy}, dt.datetime(2026, 7, 8), dt.datetime(2026, 7, 9),
+                 duration_min=60, day_start="09:00", day_end="18:00")
 # 忙碌 10:00–10:30、13:45–18:00 → 空檔 09:00–10:00、10:30–13:45
-check("free_slots 找到 2 段", len(slots) == 2)
-check("free_slots 第一段", slots[0] == (dt.datetime(2026, 7, 8, 9, 0), dt.datetime(2026, 7, 8, 10, 0)))
-check("free_slots 第二段", slots[1] == (dt.datetime(2026, 7, 8, 10, 30), dt.datetime(2026, 7, 8, 13, 45)))
-check("free_slots 週末跳過", m2kcal.free_slots(
-    [], dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13), 60) == [])  # 7/11 六 7/12 日
-check("free_slots 含週末", len(m2kcal.free_slots(
-    [], dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13), 60, include_weekends=True)) == 2)
+check("共同空檔 找到 2 段", len(slots) == 2)
+check("共同空檔 第一段", slots[0] == (dt.datetime(2026, 7, 8, 9, 0), dt.datetime(2026, 7, 8, 10, 0)))
+check("共同空檔 第二段", slots[1] == (dt.datetime(2026, 7, 8, 10, 30), dt.datetime(2026, 7, 8, 13, 45)))
+check("共同空檔 週末跳過", _allfree(
+    {}, dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13), duration_min=60) == [])  # 7/11 六 7/12 日
+check("共同空檔 含週末", len(_allfree(
+    {}, dt.datetime(2026, 7, 11), dt.datetime(2026, 7, 13),
+    duration_min=60, include_weekends=True)) == 2)
 
 # 8) events_json：aware（帶時區）與全天（date、naive）混在一起要能排序
 from types import SimpleNamespace
@@ -635,8 +649,11 @@ if srv:
              m2kcal.fetch_schedule, os.environ.pop("M2K_COOKIE", None))   # .env 可能真的有 cookie，這段要測「沒有」
     m2kcal.connect = lambda auth: object()
     m2kcal.pick_calendar = lambda p, name=None: _FakeCal0()
-    m2kcal.creds = lambda: ("u", "user", "pw")
-    m2kcal.busy_from_shared = lambda p, emails, s, e: ([(dt.datetime(2026, 9, 21, 9), dt.datetime(2026, 9, 21, 12))], ["nobody@example.com"])
+    m2kcal.creds = lambda: ("u", "user@example.com", "pw")
+    # busy_from_shared 現在每人各自一份（共同空檔要指得出誰擋住）
+    m2kcal.busy_from_shared = lambda p, emails, s, e: (
+        {"shared@example.com": [(dt.datetime(2026, 9, 21, 9), dt.datetime(2026, 9, 21, 12))]},
+        ["nobody@example.com"])
     def _no_sched(*a, **k): raise AssertionError("沒 Cookie 不該打排程端點")
     m2kcal.fetch_schedule = _no_sched
     try:
@@ -687,7 +704,9 @@ if srv:
               "\n   11:00–" in fs2 and "\n   09:00–" not in fs2 and "\n   10:00–" not in fs2)
         check("find_free_slots 對方已拒絕的會議不算忙碌（14–15 不被扣掉）",
               "11:00–18:00" in fs2)
-        check("find_free_slots 有人查不到 → 開頭警告且結果不含他", "查不到" in fs2 and "ghost@example.com" in fs2)
+        # 訊息改成帶原因（查無帳號／查詢失敗／未分享／超過人數上限），比「查不到」精確
+        check("find_free_slots 有人查不到 → 警告帶原因且點名是誰",
+              "⚠" in fs2 and "ghost@example.com" in fs2 and "查無帳號" in fs2)
         oa2 = srv.others_agenda([], days=1)
         check("others_agenda 沒給 email → 錯誤", oa2.startswith("錯誤："))
     finally:
@@ -879,8 +898,9 @@ _busy_by = {
     "a@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 12, 0))],
     "b@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 10, 0))],
 }
-_rk = m2kcal.free_slots_ranked(_busy_by, _d0, _d1, duration_min=60,
-                               day_start="09:00", day_end="13:00")
+_rk = m2kfree.common_free_slots(list(_busy_by), _d0, _d1,
+                                busy_source=_fixed_source(_busy_by), duration_min=60,
+                                day_start="09:00", day_end="13:00")["slots"]
 check("ranked 回的是 (start, end, missing)", _rk and len(_rk[0]) == 3)
 check("全員都有空的時段排最前面", _rk[0][2] == [])
 check("全員時段落在兩人都空的區間", _rk[0][0] >= dt.datetime(2026, 7, 6, 12, 0))
@@ -896,17 +916,17 @@ _busy_all = {
     "a@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 13, 0))],
     "b@example.com": [(dt.datetime(2026, 7, 6, 9, 0), dt.datetime(2026, 7, 6, 10, 0))],
 }
-_rk2 = m2kcal.free_slots_ranked(_busy_all, _d0, _d1, duration_min=60,
-                                day_start="09:00", day_end="13:00")
+_rk2 = m2kfree.common_free_slots(list(_busy_all), _d0, _d1,
+                                 busy_source=_fixed_source(_busy_all), duration_min=60,
+                                 day_start="09:00", day_end="13:00")["slots"]
 check("沒有全員時段時不回空手", _rk2 != [])
 check("次佳解指出是 a 擋住", _rk2[0][2] == ["a@example.com"])
 
 check("時長不足的時段不列入",
       all((x[1] - x[0]).total_seconds() >= 3600 for x in _rk))
-check("max_missing 可限制最多缺幾人",
-      all(len(x[2]) <= 1 for x in m2kcal.free_slots_ranked(
-          _busy_by, _d0, _d1, duration_min=60, day_start="09:00",
-          day_end="13:00", max_missing=1)))
+# 「缺幾人以內」是呈現決定，module 回全部、由呼叫端自己篩
+check("呼叫端可依缺的人數自行篩選",
+      all(len(x[2]) <= 1 for x in _rk if len(x[2]) <= 1))
 
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
@@ -923,22 +943,26 @@ def _fake_pc(principal, email):
     return _FakeSharedCal()
 m2kcal.person_calendar = _fake_pc
 try:
-    _busy, _missing = m2kcal.busy_from_shared(
+    _by_person, _missing = m2kcal.busy_from_shared(
         None, ["a@x.com", "noshare@x.com"],
         dt.datetime(2026, 8, 1), dt.datetime(2026, 8, 8))
+    _busy = _by_person.get("a@x.com", [])
 finally:
     m2kcal.person_calendar = _orig_pc
 check("busy_from_shared 未分享列入 missing", _missing == ["noshare@x.com"])
+check("busy_from_shared 每人各自一份（共同空檔要指得出誰擋住）",
+      list(_by_person) == ["a@x.com"])
 check("busy_from_shared 一般事件成為忙碌區間",
       (dt.datetime(2026, 8, 3, 10, 0), dt.datetime(2026, 8, 3, 11, 0)) in _busy)
 check("busy_from_shared 全天＝整天忙碌",
       (dt.datetime(2026, 8, 4, 0, 0), dt.datetime(2026, 8, 5, 0, 0)) in _busy)
 # 併入 free_slots：8/3 10-11 被扣掉、8/4 整天無空檔
-_slots = m2kcal.free_slots(_busy, dt.datetime(2026, 8, 3), dt.datetime(2026, 8, 5), 60)
-check("free_slots 扣掉分享日曆的忙碌時段",
+_slots = _allfree({"a@x.com": _busy}, dt.datetime(2026, 8, 3), dt.datetime(2026, 8, 5),
+                  duration_min=60)
+check("共同空檔 扣掉分享日曆的忙碌時段",
       all(not (a < dt.datetime(2026, 8, 3, 11) and b > dt.datetime(2026, 8, 3, 10))
           for a, b in _slots))
-check("free_slots 全天忙碌日無空檔",
+check("共同空檔 全天忙碌日無空檔",
       all(a.date() != dt.date(2026, 8, 4) for a, b in _slots))
 
 print("\n全部通過 ✅")

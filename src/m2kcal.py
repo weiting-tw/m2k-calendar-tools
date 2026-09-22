@@ -1306,97 +1306,13 @@ def parse_freebusy(text):
     return sorted(out)
 
 
-def free_slots_ranked(busy_by_person, start, end, duration_min=60,
-                      day_start="09:00", day_end="18:00", include_weekends=False,
-                      max_missing=None):
-    """人多的時候常常湊不出全員空檔，只回「查無」等於把取捨丟回去卻沒給依據。
-    這個版本連「少幾個人就能開」的時段一起回，並標出是誰擋住。
-
-    busy_by_person: {email: [(start, end), ...]}
-    回 [(slot_start, slot_end, missing)]，missing 是該時段忙的人（空＝全員可），
-    依「缺的人數少→時間早」排序。max_missing 可限制最多缺幾人。
-    """
-    people = list(busy_by_person or {})
-    # 先取沒有任何行程時的可用骨架，日界/週末/工作時段規則跟 free_slots 一致
-    skeleton = free_slots([], start, end, 1, day_start, day_end, include_weekends)
-
-    out = []
-    for ws, we in skeleton:
-        # 用所有人的忙碌邊界把骨架切成小段，每段的「誰忙」是固定的
-        edges = {ws, we}
-        for who in people:
-            for b0, b1 in busy_by_person[who]:
-                if b1 > ws and b0 < we:
-                    edges.add(max(b0, ws))
-                    edges.add(min(b1, we))
-        marks = sorted(edges)
-        segs = []
-        for i in range(len(marks) - 1):
-            a, b = marks[i], marks[i + 1]
-            if b <= a:
-                continue
-            busy_here = sorted(
-                who for who in people
-                if any(b0 < b and b1 > a for b0, b1 in busy_by_person[who]))
-            segs.append([a, b, busy_here])
-        # 相鄰且「缺同一群人」的段落接回去，否則會被切得過碎而湊不出時長
-        merged = []
-        for seg in segs:
-            if merged and merged[-1][2] == seg[2] and merged[-1][1] == seg[0]:
-                merged[-1][1] = seg[1]
-            else:
-                merged.append(seg)
-        for a, b, missing in merged:
-            if (b - a).total_seconds() >= duration_min * 60:
-                if max_missing is None or len(missing) <= max_missing:
-                    out.append((a, b, missing))
-    out.sort(key=lambda x: (len(x[2]), x[0]))
-    return out
-
-
-def free_slots(busy, start, end, duration_min=60,
-               day_start="09:00", day_end="18:00", include_weekends=False):
-    """純函式：在 [start, end) 每天的工作時段扣除 busy 區間，
-    回傳長度 >= duration_min 的空檔 (start, end) 清單。"""
-    def hm(s):
-        h, m = s.split(":")
-        return int(h), int(m)
-    sh, sm = hm(day_start)
-    eh, em = hm(day_end)
-    merged = []
-    for s0, e0 in sorted(busy):
-        if merged and s0 <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e0))
-        else:
-            merged.append((s0, e0))
-    out = []
-    day = start.replace(hour=0, minute=0, second=0, microsecond=0)
-    while day < end:
-        if include_weekends or day.weekday() < 5:
-            ws = day.replace(hour=sh, minute=sm)
-            we = day.replace(hour=eh, minute=em)
-            cur = max(ws, start)
-            for s0, e0 in merged:
-                if e0 <= cur or s0 >= we:
-                    continue
-                if s0 > cur:
-                    out.append((cur, min(s0, we)))
-                cur = max(cur, e0)
-                if cur >= we:
-                    break
-            if cur < min(we, end):
-                out.append((cur, min(we, end)))
-        day += dt.timedelta(days=1)
-    return [(s0, e0) for s0, e0 in out
-            if (e0 - s0).total_seconds() >= duration_min * 60]
-
-
 def busy_from_shared(principal, emails, s, e):
     """從「已分享給你的日曆」讀出這些人的忙碌區間——伺服器不支援 RFC 6638
-    排程 free-busy 時的替代做法。回 (busy, missing)：busy 為 [(開始, 結束)]
-    區間清單（可餵 free_slots）、missing 為讀不到（未分享/不存在）的 email。
+    排程 free-busy 時的替代做法。回 ({email: [(開始, 結束)]}, missing)：
+    **每人各自一份**（共同空檔要指得出誰擋住，合併成一份就分不出來了）、
+    missing 為讀不到（未分享/不存在）的 email。
     全天事件視為整天忙碌（例如請假），避免把會排進當天。"""
-    busy, missing = [], []
+    by_person, missing = {}, []
     for em in emails or []:
         em = (em or "").strip().lower()
         if not em:
@@ -1407,6 +1323,7 @@ def busy_from_shared(principal, emails, s, e):
         except Exception:
             missing.append(em)
             continue
+        periods = []
         for r in _event_rows(evs):
             a = r["start"]
             b = r["end"] or a
@@ -1414,8 +1331,9 @@ def busy_from_shared(principal, emails, s, e):
                 a = a.replace(hour=0, minute=0, second=0, microsecond=0)
                 b = max(b, a + dt.timedelta(days=1))  # DTEND 為排他日期
             if b > a:
-                busy.append((a, b))
-    return busy, missing
+                periods.append((a, b))
+        by_person[em] = periods
+    return by_person, missing
 
 
 

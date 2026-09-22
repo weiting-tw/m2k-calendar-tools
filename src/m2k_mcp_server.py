@@ -72,6 +72,7 @@ except ImportError:
     sys.exit('需要 mcp 套件：pip install "mcp[cli]"')
 
 import m2kcal  # 重用既有 CalDAV / ICS 邏輯
+import m2kfree  # 共同空檔
 from _version import __version__
 
 m2kcal.load_dotenv()
@@ -1118,79 +1119,63 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     day_start/day_end 每天的可排時段；include_weekends 是否含週末；
     attendees 一併扣掉這些同事的忙碌時段、回傳大家都有空的時間（email 清單，
     人名先用 find_person / find_group 查）。會用已設定的帳密自動換 webmail session
-    查任何人（排程端點）；只有登入失敗時才退回「對方已分享給你的行事曆」並列出未納入者。"""
-    cookie = _cookie(ctx).strip() if attendees else ""   # 先試明確提供的，再用帳密自動換
+    查任何人（排程端點）；只有登入失敗時才退回「對方已分享給你的行事曆」並列出未納入者。
+    全員湊不出來時會改列「少幾位就能開」的時段並標出缺誰。"""
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
              + dt.timedelta(days=days))
         auth = _auth(ctx) or m2kcal.creds()
-        p = m2kcal.connect(auth)
-        cal = m2kcal.pick_calendar(p)
-        fb = cal.freebusy_request(s, e)
-        own_busy = m2kcal.parse_freebusy(
-            fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
-        others_note = []
-        # 每人各自一份。別把它們累加回 own_busy——次佳解要靠「誰的忙碌是誰的」
-        # 才算得出缺誰，混在一起的話「（你）」會背下所有人的忙碌。
-        busy_by = {}          # {email: [(s,e)]}
-        if attendees and cookie:
-            others, dropped = _others_schedule(cookie, attendees, s, e, ctx)
-            failed = [em for em, evs in others.items() if isinstance(evs, Exception)]
-            for em, evs in others.items():
-                if not isinstance(evs, Exception):
-                    busy_by[em] = m2kcal.busy_periods(evs)
-            # 有人查不到就不能說「大家都有空」——先講清楚，結果照給
-            if failed:
-                others_note.append("⚠ 這些人查不到，結果不含他們：" + "；".join(
-                    f"{em}（{others[em]}）" for em in failed))
-            if dropped:
-                others_note.append(f"⚠ 一次最多查 {m2kcal.MAX_SCHED_PEOPLE} 人，未計入：" + ", ".join(dropped))
-        elif attendees:
-            # 沒 Cookie → 只能讀「對方已分享給你的行事曆」；讀不到的明確列出
-            sbusy, missing = m2kcal.busy_from_shared(p, attendees, s, e)
-            busy_by["（已分享的與會者）"] = sbusy
-            got = len(attendees) - len(missing)
-            others_note.append(f"（沒有 webmail Cookie，他人忙碌時段取自其分享給你的行事曆，已納入 {got} 人；"
-                               "要查未分享的人請提供 Cookie，見 others_agenda 說明）")
-            if missing:
-                others_note.append("⚠ 這些人沒有把行事曆分享給你，未納入計算：" + ", ".join(missing))
-        by_person = {"（你）": own_busy, **busy_by}
-        everyone = [iv for periods in by_person.values() for iv in periods]
-        slots = m2kcal.free_slots(everyone, s, e, duration_minutes,
-                                  day_start, day_end, include_weekends)
-        # 全員湊不出來時，改給「少幾個人就能開」的次佳解並標出缺誰
-        ranked = []
-        if not slots and busy_by:
-            ranked = [x for x in m2kcal.free_slots_ranked(
-                by_person, s, e, duration_minutes, day_start, day_end,
-                include_weekends, max_missing=2) if x[2]][:8]
+        cookie = _cookie(ctx).strip() if attendees else ""
+        result = m2kfree.common_free_slots(
+            [auth[1], *(attendees or [])], s, e,
+            busy_source=m2kfree.live_busy_source(
+                auth, cookie=cookie,
+                refresh_cookie=(lambda: _cookie(ctx, force=True)) if ctx is not None else None),
+            duration_min=duration_minutes, day_start=day_start, day_end=day_end,
+            include_weekends=include_weekends)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     except Exception as err:
         return f"錯誤：free-busy 查詢失敗：{err}"
-    if not slots:
-        head = [f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
-                f"找不到全員都有空的 ≥ {duration_minutes} 分鐘空檔。"] + others_note
-        if ranked:
-            wk0 = "一二三四五六日"
-            head.append("\n最接近的選擇（少這幾位就能開，請自行取捨）：")
-            for a, b, missing in ranked:
-                head.append(f"  {a:%m-%d}(週{wk0[a.weekday()]}) {a:%H:%M}–{b:%H:%M}"
-                            f"  缺 {len(missing)} 位：" + "、".join(missing))
-        return "\n".join(head)
+
+    me = (auth[1] or "").lower()
+    show = lambda em: "你" if em == me else em          # noqa: E731
     wk = "一二三四五六日"
-    who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
-    out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
-           f"≥ {duration_minutes} 分鐘的空檔："] + others_note
-    cur = None
-    for a, b in slots:
-        if a.date() != cur:
-            cur = a.date()
-            out.append(f"\n📅 {cur.isoformat()} (週{wk[cur.weekday()]})")
-        mins = int((b - a).total_seconds() // 60)
-        out.append(f"   {a:%H:%M}–{b:%H:%M}（{mins} 分鐘）")
-    return "\n".join(out)
+    notes = []
+    if attendees and not cookie:
+        # 沒 cookie 只讀得到「對方分享給你的」，得講清楚為什麼名單不齊
+        notes.append("（沒有 webmail Cookie，他人忙碌時段取自其分享給你的行事曆；"
+                     "要查未分享的人請提供 Cookie，見 others_agenda 說明）")
+    by_reason = {}
+    for em, why in result["unavailable"].items():
+        by_reason.setdefault(why, []).append(show(em))
+    for why, who in by_reason.items():
+        notes.append(f"⚠ {why}，未納入計算：" + "、".join(who))
+
+    allfree = [(a, b) for a, b, missing in result["slots"] if not missing]
+    if allfree:
+        who = f"（含 {len(attendees)} 位與會者）" if attendees else ""
+        out = [f"{s:%Y-%m-%d} 起 {days} 天{who}，工作時段 {day_start}–{day_end}，"
+               f"≥ {duration_minutes} 分鐘的空檔："] + notes
+        cur = None
+        for a, b in allfree:
+            if a.date() != cur:
+                cur = a.date()
+                out.append(f"\n📅 {cur.isoformat()} (週{wk[cur.weekday()]})")
+            out.append(f"   {a:%H:%M}–{b:%H:%M}（{int((b - a).total_seconds() // 60)} 分鐘）")
+        return "\n".join(out)
+
+    head = [f"{s:%Y-%m-%d} 起 {days} 天內（{day_start}–{day_end}）"
+            f"找不到全員都有空的 ≥ {duration_minutes} 分鐘空檔。"] + notes
+    # 顯示幾筆、缺幾人以內是呈現決定，module 回的是全部
+    nearly = [x for x in result["slots"] if 0 < len(x[2]) <= 2][:8]
+    if nearly:
+        head.append("\n最接近的選擇（少這幾位就能開，請自行取捨）：")
+        for a, b, missing in nearly:
+            head.append(f"  {a:%m-%d}(週{wk[a.weekday()]}) {a:%H:%M}–{b:%H:%M}"
+                        f"  缺 {len(missing)} 位：" + "、".join(show(m) for m in missing))
+    return "\n".join(head)
 
 
 def others_agenda(emails: list[str], start: str = "", days: int = 7,
