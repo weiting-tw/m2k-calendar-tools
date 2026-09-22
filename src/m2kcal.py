@@ -723,7 +723,7 @@ def _fold(line):
 
 def build_ics(title, start, end, location="", desc="", attendees=None,
               organizer="", uid=None, stamp=None, rrule="", reminder_minutes=0,
-              all_day=False):
+              all_day=False, url=""):
     """組出 iCalendar 字串，格式對齊 Mail2000（帶 VTIMEZONE + TZID，
     Mail2000/SabreDAV 後端不吃純 UTC/浮動時間，會回 500）。純函式，方便測試。
     rrule：RRULE 內容（如 'FREQ=WEEKLY;UNTIL=...'）；reminder_minutes：開始前 N 分鐘 VALARM；
@@ -770,6 +770,10 @@ def build_ics(title, start, end, location="", desc="", attendees=None,
         lines.append(f"LOCATION:{_ical_escape(location)}")
     if desc:
         lines.append(f"DESCRIPTION:{_ical_escape(desc)}")
+    # 會議連結放 URL 屬性，多數客戶端會渲染成「加入會議」而不是把整串網址
+    # 攤在描述裡。網址本身不做 iCal 逸出（; , 在 URL 裡是合法字元），只擋換行。
+    if url:
+        lines.append(f"URL:{_line_safe(url)}")
     # 與會者：此站台 CalDAV 無排程 (schedule-outbox 404)，ATTENDEE 只記錄、不會自動寄邀請。
     if attendees:
         for a in attendees:
@@ -1005,6 +1009,44 @@ def group_mailbox(group_name, user_email):
     if not dom:
         return ""
     return f"{group_name.strip().lower()}@{dom}"
+
+
+def vet_attendees(attendees, group_paths=None):
+    """book/update 前的與會者健檢（純函式）。回 dict：
+
+      invalid : 不是合法 email 形狀的字串——一定是打錯
+      covered : [(子層群組信箱, 父層群組信箱)]——兩者同時在名單裡，子層的人會收到多份
+
+    group_paths 是 {群組信箱: 組織樹 path}。
+
+    帳號是否真的存在**不在這裡判斷**：曾經用過「有沒有出現在自己的往來紀錄」當判準，
+    但那會自我污染——打錯的位址一旦被加進事件、或邀請信寄出時出現在 To/Cc，
+    就同時進了行事曆歷史與信件往來，之後永遠被當成已知。權威答案要問伺服器
+    （排程端點查無帳號會回 rspCode -102），見 MCP 層的帳號存在性檢查。
+    """
+    group_paths = {k.lower(): v for k, v in (group_paths or {}).items()}
+    invalid, seen = [], set()
+    for a in attendees or []:
+        em = (a or "").strip().lower()
+        if not em or em in seen:
+            continue
+        seen.add(em)
+        if not _EMAIL_RE.fullmatch(em):
+            invalid.append(a.strip())
+
+    # 父子群組信箱並存：父層那封已經涵蓋子層的人，子層再帶一次就是重複
+    boxes = [e for e in seen if e in group_paths]
+    covered = []
+    for child in boxes:
+        cpath = (group_paths[child] or "").rstrip("/")
+        for parent in boxes:
+            if parent == child:
+                continue
+            ppath = (group_paths[parent] or "").rstrip("/")
+            if ppath and cpath.startswith(ppath + "/"):
+                covered.append((child, parent))
+                break
+    return {"invalid": invalid, "covered": sorted(covered)}
 
 
 def descendant_groups(groups, path):
@@ -1519,8 +1561,9 @@ def _wall_prop(t):
 
 def _apply_changes(ev, title=None, start=None, end=None, location=None,
                    desc=None, add_attendees=None, remove_attendees=None,
-                   respond=None):
-    """把欄位變更套到一個 VEVENT component 上（None＝不變）。"""
+                   respond=None, url=None):
+    """把欄位變更套到一個 VEVENT component 上（None＝不變）。
+    url 另有「給空字串＝移除」的語意，所以用 is not None 判斷。"""
     from icalendar.prop import vText
     if title:
         ev.pop("SUMMARY", None)
@@ -1531,6 +1574,10 @@ def _apply_changes(ev, title=None, start=None, end=None, location=None,
     if desc:
         ev.pop("DESCRIPTION", None)
         ev.add("DESCRIPTION", desc)
+    if url is not None:
+        ev.pop("URL", None)
+        if url:
+            ev.add("URL", url)
     if start:
         ev.pop("DTSTART", None)
         ev["DTSTART"] = _wall_prop(start)
@@ -1611,16 +1658,17 @@ def _ensure_vtimezone(ical):
 
 def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
                      desc=None, add_attendees=None, remove_attendees=None,
-                     respond=None, rrule=None, reminder=None):
+                     respond=None, rrule=None, reminder=None, url=None):
     """純函式：讀入既有事件的 ICS，套用指定變更後回傳新 ICS 文字（None＝不變）。
     respond=(email, PARTSTAT)：把該與會者的出席狀態改為 ACCEPTED/DECLINED/TENTATIVE。
     rrule：None＝不變；""＝移除重複規則；'FREQ=…'＝改寫重複規則。
+    url：None＝不變；""＝移除會議連結；其他＝改寫（沒有就新增）。
     reminder：None＝不變；0＝移除所有提醒；N＝改為開始前 N 分鐘 DISPLAY 提醒。
     只動有給的欄位，其餘屬性（VALARM、X-…）原樣保留；
     SEQUENCE +1、更新 DTSTAMP/LAST-MODIFIED。"""
     ical, ev = _parse_event_ics(ics_text)
     _apply_changes(ev, title, start, end, location, desc,
-                   add_attendees, remove_attendees, respond)
+                   add_attendees, remove_attendees, respond, url)
     if rrule is not None:
         from icalendar.prop import vRecur
         ev.pop("RRULE", None)
@@ -1647,7 +1695,7 @@ def update_event_ics(ics_text, title=None, start=None, end=None, location=None,
 
 def detach_occurrence_ics(ics_text, occurrence, new_uid, title=None, start=None,
                           end=None, location=None, desc=None,
-                          add_attendees=None, remove_attendees=None):
+                          add_attendees=None, remove_attendees=None, url=None):
     """純函式：把重複會議的某一次（occurrence＝該次開始時間）拆成
     「獨立事件」的 ICS（新 UID、無 RRULE），可同時套用變更。
     背景：Mail2000 不支援 RECURRENCE-ID 單次例外（已實測——例外排主事件
@@ -1673,7 +1721,7 @@ def detach_occurrence_ics(ics_text, occurrence, new_uid, title=None, start=None,
     ev["DTSTART"] = _wall_prop(occurrence)
     ev["DTEND"] = _wall_prop(occurrence + dur)
     _apply_changes(ev, title, start, end, location, desc,
-                   add_attendees, remove_attendees)
+                   add_attendees, remove_attendees, url=url)
     _bump_and_stamp(ev, seq_base=-1)  # 新事件 SEQUENCE:0
     out.add_component(ev)
     return out.to_ical().decode("utf-8")
@@ -1697,7 +1745,7 @@ def add_exdate_ics(ics_text, occurrence):
 
 def split_series_ics(ics_text, split_start, new_uid, title=None, start=None,
                      end=None, location=None, desc=None,
-                     add_attendees=None, remove_attendees=None, rrule=None):
+                     add_attendees=None, remove_attendees=None, rrule=None, url=None):
     """純函式：把重複系列在 split_start 拆成兩串（「改此次及以後」用）——
     原串 RRULE 加 UNTIL=split_start 前一秒；新串（new_uid）從 split_start 起，
     沿用原規則（去掉 UNTIL；rrule 參數可另訂新規則），並可同時套用變更。
@@ -1732,7 +1780,7 @@ def split_series_ics(ics_text, split_start, new_uid, title=None, start=None,
     elif rrule:
         ev.add("RRULE", vRecur.from_ical(rrule))
     _apply_changes(ev, title, start, end, location, desc,
-                   add_attendees, remove_attendees)
+                   add_attendees, remove_attendees, url=url)
     _bump_and_stamp(ev, seq_base=-1)  # 新串 SEQUENCE:0
     out.add_component(ev)
     # 原串：UNTIL 截止於 split 前一秒（UTC）；COUNT 與 UNTIL 互斥，一併移除

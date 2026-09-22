@@ -244,14 +244,18 @@ def _notify_note(auth, ics: str, method: str, subject: str, body: str,
 
 
 def book(title: str, start: str, end: str = "", location: str = "",
-         description: str = "", attendees: list[str] | None = None,
+         description: str = "", url: str = "", attendees: list[str] | None = None,
+         confirmed_attendees: bool = False,
          repeat: str = "", repeat_until: str = "",
          repeat_byday: list[str] | None = None, repeat_interval: int = 0,
          reminder_minutes: int = 0, all_day: bool = False, calendar: str = "",
          notify: bool = False, ctx: Context = None) -> str:
     """建立會議。
     title 標題；start/end 時間 'YYYY-MM-DD HH:MM'（end 省略則 +1 小時，台北時間）；
-    location 地點；description 描述；attendees 與會者 email 清單；
+    location 地點；description 描述；url 視訊會議連結（寫進 iCalendar 的 URL 屬性，
+    多數客戶端會渲染成「加入會議」，不要把長網址塞進 description）；
+    attendees 與會者 email 清單（建立前會健檢：格式錯誤、沒往來過的位址會擋下來，
+    把名單列給使用者確認後再帶 confirmed_attendees=true 重送）；
     repeat 重複頻率 daily/weekly/monthly（省略＝不重複）；repeat_until 重複截止 'YYYY-MM-DD'；
     repeat_byday 指定星期（weekly 用，如 ["TU","TH"]＝每週二四；monthly 可帶序數如 ["3FR"]＝
     每月第三個週五）；repeat_interval 每 N 個週期一次（如 weekly+2＝每兩週）；
@@ -280,18 +284,26 @@ def book(title: str, start: str, end: str = "", location: str = "",
             rrule = m2kcal.compose_rrule(repeat, until=u, byday=repeat_byday,
                                          interval=repeat_interval)
         auth = _auth(ctx) or m2kcal.creds()
-        url, user, pwd = auth
+        _, user, pwd = auth        # 不要叫 url：會蓋掉參數裡的會議連結
+        # 壞位址會被原樣寫進事件、之後沒人會發現；先擋下來讓使用者確認
+        blockers, vet_notes = _vet_note(auth, attendees)
+        if blockers and not confirmed_attendees:
+            return ("尚未建立會議，請先確認與會者名單：\n"
+                    + "\n".join("  ✗ " + b for b in blockers)
+                    + "\n\n確認無誤要照原樣建立的話，重送一次並帶 confirmed_attendees=true；"
+                      "要改名單就把 attendees 換掉再送。")
         cal = _cal(auth, calendar)
         note = "" if all_day else _overlap_note(cal, s, e)
         uid = str(uuid.uuid4())
         ics = m2kcal.build_ics(title, s, e, location, description,
-                               attendees=attendees, organizer=user, uid=uid,
+                               attendees=attendees, organizer=user, uid=uid, url=url,
                                rrule=rrule, reminder_minutes=reminder_minutes,
                                all_day=all_day)
         put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
-    lines = ["已建立並驗證：",
+    lines = (["⚠ 與會者名單有重複風險："] + vet_notes + [""] if vet_notes else []) + [
+        "已建立並驗證：",
              f"  標題: {info.get('SUMMARY', title)}",
              f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"
              + ("（全天）" if all_day else "")]
@@ -323,6 +335,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                  repeat: str = "", repeat_until: str = "",
                  repeat_byday: list[str] | None = None, repeat_interval: int = 0,
                  reminder_minutes: int | None = None,
+                 url: str | None = None, confirmed_attendees: bool = False,
                  notify: bool = False, ctx: Context = None) -> str:
     """修改既有會議。uid 取自 agenda / list_events 輸出的「id:」欄位。
     只更新有給的欄位：title 標題；start/end 時間 'YYYY-MM-DD HH:MM'；
@@ -335,6 +348,9 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
     兩者都會回覆新 id，後續修改請用新 id（Mail2000 不支援原生單次例外）。
     repeat 改重複規則（none=取消重複/daily/weekly/monthly，搭配 repeat_until、
     repeat_byday 如 ["TU","TH"]、repeat_interval 每 N 週期一次）。
+    url 會議連結：不給＝不變、給空字串＝移除、給網址＝改寫（沒有就新增）。
+    add_attendees 會先健檢（格式、伺服器查無帳號），有問題就擋下來讓使用者確認；
+    確認無誤要照原樣加入時帶 confirmed_attendees=true。
     notify=true 以你的名義寄更新通知信（iMIP）給與會者——使用者明確要求才帶。
     改時間時若與現有行程重疊會附警告。
     """
@@ -360,6 +376,12 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                 rrule = m2kcal.compose_rrule(repeat, until=u, byday=repeat_byday,
                                              interval=repeat_interval)
         auth = _auth(ctx) or m2kcal.creds()
+        # 加人時同樣先驗，否則壞位址一樣會被寫進既有事件
+        blockers, vet_notes = _vet_note(auth, add_attendees)
+        if blockers and not confirmed_attendees:
+            return ("尚未修改，請先確認要加入的與會者：\n"
+                    + "\n".join("  ✗ " + b for b in blockers)
+                    + "\n\n確認無誤要照原樣加入的話，重送一次並帶 confirmed_attendees=true。")
         cal = _cal(auth)
         ev = m2kcal.find_event_by_uid(cal, uid)
         note = ""
@@ -382,7 +404,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                 ev.data, occ, new_uid, title=title or None,
                 start=m2kcal.parse_when(start) if start else None,
                 end=m2kcal.parse_when(end) if end else None,
-                location=location or None, desc=description or None,
+                location=location or None, desc=description or None, url=url,
                 add_attendees=add_attendees, remove_attendees=remove_attendees)
             put_status, info = m2kcal.put_and_verify(cal, ics, new_uid, auth=auth)
             try:
@@ -405,7 +427,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                 ev.data, occ, new_uid, title=title or None,
                 start=m2kcal.parse_when(start) if start else None,
                 end=m2kcal.parse_when(end) if end else None,
-                location=location or None, desc=description or None,
+                location=location or None, desc=description or None, url=url,
                 add_attendees=add_attendees, remove_attendees=remove_attendees,
                 rrule=rrule)
             put_status, info = m2kcal.put_and_verify(cal, new_ics, new_uid, auth=auth)
@@ -429,7 +451,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                 end=m2kcal.parse_when(end) if end else None,
                 location=location or None, desc=description or None,
                 add_attendees=add_attendees, remove_attendees=remove_attendees,
-                rrule=rrule, reminder=reminder_minutes)
+                rrule=rrule, reminder=reminder_minutes, url=url)
             new_seq = m2kcal.parse_ics(ics).get("SEQUENCE")
             put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth,
                                                      put_url=str(ev.url),
@@ -437,7 +459,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
             head = "已更新並驗證："
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
-    lines = [head,
+    lines = (["⚠ 與會者名單有重複風險："] + vet_notes + [""] if vet_notes else []) + [head,
              f"  標題: {info.get('SUMMARY', '?')}",
              f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
     if repeat:
@@ -764,6 +786,65 @@ def find_person(names: list[str], ctx: Context = None) -> str:
 
 _GROUPS_CACHE: dict[str, tuple[float, list]] = {}
 _DIRGROUPS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _group_mailbox_paths(auth) -> dict:
+    """{群組信箱: 組織樹 path}，用來辨認 attendees 裡哪些是群組信箱、誰涵蓋誰。
+    讀不到部門樹就回空 dict——健檢降級，不該讓 book 整個失敗。"""
+    try:
+        return {m2kcal.group_mailbox(g["name"], auth[1]): g.get("path", "")
+                for g in _dir_groups(auth) if g.get("name")}
+    except Exception:
+        return {}
+
+
+_VET_MAX = 80        # 一次最多驗這麼多個，避免超大名單把 book 拖太久
+
+
+def _missing_accounts(auth, attendees) -> tuple[list[str], bool]:
+    """問排程端點哪些位址查無帳號（權威判準，每個約 0.1 秒）。
+    回 (查無的位址, 是否真的驗過)。拿不到 webmail session 就回 ([], False)——
+    沒驗過不等於都正確，呼叫端要照實說。"""
+    try:
+        cookie = m2kcal.session_cookie(auth)
+    except Exception:
+        return [], False
+    s = dt.datetime.now()
+    e = s + dt.timedelta(days=1)
+    missing = []
+    for em in attendees[:_VET_MAX]:
+        try:
+            m2kcal.fetch_schedule(cookie, em, s, e)
+        except m2kcal.M2KError as err:
+            if "查無此帳號" in str(err):
+                missing.append(em)
+        except Exception:
+            pass          # 網路/逾時不代表帳號不存在，別誤擋
+    return missing, True
+
+
+def _vet_note(auth, attendees) -> tuple[list[str], list[str]]:
+    """跑與會者健檢，回 (blockers, notes)。blockers 非空代表該先讓使用者確認。"""
+    if not attendees:
+        return [], []
+    blockers, notes = [], []
+    try:
+        r = m2kcal.vet_attendees(attendees, _group_mailbox_paths(auth))
+    except Exception:
+        r = {"invalid": [], "covered": []}
+    if r["invalid"]:
+        blockers.append("這些不是合法的 email：" + "、".join(r["invalid"]))
+    good = [a for a in attendees if a and a.strip() not in r["invalid"]]
+    missing, verified = _missing_accounts(auth, good)
+    if missing:
+        blockers.append("伺服器查無這些帳號（打錯或已離職）：" + "、".join(missing))
+    elif not verified:
+        notes.append("  （沒能連上排程端點，這次沒驗證帳號是否存在）")
+    if len(good) > _VET_MAX:
+        notes.append(f"  （名單超過 {_VET_MAX} 位，只驗了前 {_VET_MAX} 位的帳號）")
+    for child, parent in r["covered"]:
+        notes.append(f"  ⚠ {child} 的成員已被 {parent} 涵蓋，兩個都帶會讓同一人收到多份邀請。")
+    return blockers, notes
 
 
 def _dir_groups(auth):

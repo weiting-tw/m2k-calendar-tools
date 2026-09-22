@@ -787,6 +787,73 @@ check("descendant 尾端斜線不影響",
 check("descendant path 為空時回空（不要把整棵樹當子孫）",
       m2kcal.descendant_groups(_tree, "") == [])
 
+# 25c) build_ics 的 URL 屬性：會議連結放 DESCRIPTION 會在邀請信卡片攤開，
+#      放 iCalendar 的 URL 屬性多數客戶端會渲染成「加入會議」按鈕
+_us = dt.datetime(2026, 7, 1, 10, 0)
+_ue = dt.datetime(2026, 7, 1, 11, 0)
+_ics_url = m2kcal.build_ics("有連結的會", _us, _ue, url="https://meet.example.com/abc-def-ghi",
+                            uid="U-URL", stamp="20260701T000000Z")
+check("build_ics 寫出 URL 屬性", "\r\nURL:https://meet.example.com/abc-def-ghi" in _ics_url)
+check("URL 在 VEVENT 內", _ics_url.index("URL:") > _ics_url.index("BEGIN:VEVENT"))
+_ics_nourl = m2kcal.build_ics("沒連結的會", _us, _ue, uid="U-NOURL", stamp="20260701T000000Z")
+check("沒給 url 就不寫 URL 屬性", "URL:" not in _ics_nourl)
+check("URL 含分號逗號會跳脫", "URL:https://x.test/a%3Bb" in
+      m2kcal.build_ics("x", _us, _ue, url="https://x.test/a%3Bb", uid="U", stamp="20260701T000000Z"))
+
+# 25d) update_event_ics 改 URL：原本沒有就加、給空字串就移除
+_up = m2kcal.update_event_ics(_ics_url, url="https://meet.example.com/new-link")
+check("update 改 URL", "URL:https://meet.example.com/new-link" in unfold(_up))
+check("update 改 URL 不留舊的", "abc-def-ghi" not in unfold(_up))
+_up2 = m2kcal.update_event_ics(_ics_url, url="")
+check("update 給空字串移除 URL", "URL:" not in unfold(_up2))
+_up3 = m2kcal.update_event_ics(_ics_nourl, url="https://meet.example.com/added")
+check("update 對原本沒 URL 的事件可新增", "URL:https://meet.example.com/added" in unfold(_up3))
+check("update 不帶 url 參數時保留原值", "URL:https://meet.example.com/abc-def-ghi"
+      in unfold(m2kcal.update_event_ics(_ics_url, title="改標題")))
+
+# 25e) vet_attendees：book 前的與會者健檢（純函式，不連網）
+#      A3 壞位址、A4 父子群組信箱並存導致同一人收多份
+_gpaths = {"eng@example.com": "/ORG/ENG",
+           "eng_a@example.com": "/ORG/ENG/ENG_A",
+           "eng_a1@example.com": "/ORG/ENG/ENG_A/ENG_A1",
+           "sales@example.com": "/ORG/SALES"}
+
+_r = m2kcal.vet_attendees(["alice@example.com", "bob@example.com"], _gpaths)
+check("vet 全部正常時無問題", _r["invalid"] == [] and _r["covered"] == [])
+
+_r = m2kcal.vet_attendees(["alice@example.com", "not-an-email", "a@b"], _gpaths)
+check("vet 抓出格式不合的位址（含缺 TLD 的 a@b）",
+      _r["invalid"] == ["not-an-email", "a@b"])
+
+# 帳號存在性改由排程端點判斷（往來紀錄會自我污染），這裡只管形狀與重複
+
+# 父層與子層群組信箱同時出現：子層的人會收到兩份
+_r = m2kcal.vet_attendees(["eng@example.com", "eng_a@example.com"], _gpaths)
+check("vet 抓出被父層涵蓋的子層群組信箱",
+      _r["covered"] == [("eng_a@example.com", "eng@example.com")])
+
+_r = m2kcal.vet_attendees(["eng@example.com", "eng_a1@example.com"], _gpaths)
+check("vet 涵蓋判斷跨越多層", _r["covered"] == [("eng_a1@example.com", "eng@example.com")])
+
+_r = m2kcal.vet_attendees(["eng@example.com", "sales@example.com"], _gpaths)
+check("vet 不同分支的群組信箱不算涵蓋", _r["covered"] == [])
+
+_r = m2kcal.vet_attendees(["eng_a@example.com"], _gpaths)
+check("vet 只有一個群組信箱不算涵蓋", _r["covered"] == [])
+
+check("vet 空清單不炸", m2kcal.vet_attendees([], _gpaths)["invalid"] == [])
+check("vet 大小寫不影響涵蓋判斷",
+      m2kcal.vet_attendees(["ENG@example.com", "Eng_A@example.com"], _gpaths)["covered"]
+      == [("eng_a@example.com", "eng@example.com")])
+
+# 25f) 靜態守衛：book 解構 auth 時不可再叫 url——會蓋掉「會議連結」參數，
+#      把 CalDAV 伺服器網址寫進事件。這種撞名離線測不到（要跑到 MCP 層），
+#      所以直接檢查原始碼。
+_srv_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "src", "m2k_mcp_server.py"), encoding="utf-8").read()
+check("book 不用 url 當 auth 解構的變數名", "url, user, pwd = auth" not in _srv_src)
+check("book 仍把 url 參數傳進 build_ics", "uid=uid, url=url" in _srv_src)
+
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
                              dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")
