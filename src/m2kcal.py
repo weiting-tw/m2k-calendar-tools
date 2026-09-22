@@ -1007,6 +1007,20 @@ def group_mailbox(group_name, user_email):
     return f"{group_name.strip().lower()}@{dom}"
 
 
+def descendant_groups(groups, path):
+    """回 path 底下的所有子孫部門（不含自己）。
+
+    path 是組織樹位置，形如 /ROOT/BU/DEPT/SUB，分隔符只有 "/"。
+    比對時補上結尾斜線，否則 /A/B 會誤中名字以它開頭的兄弟部門 /A/BX。
+    path 為空就回空——那表示呼叫端沒拿到位置資訊，不該把整棵樹當成子孫。
+    """
+    base = (path or "").rstrip("/")
+    if not base:
+        return []
+    pre = base + "/"
+    return [g for g in groups if (g.get("path") or "").startswith(pre)]
+
+
 def match_directory_groups(groups, query):
     """模糊比對部門/群組名（正規化去空白/底線/連字號做子字串比對）。"""
     def norm(s):

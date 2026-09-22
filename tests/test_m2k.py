@@ -761,6 +761,32 @@ check("group_mailbox 去空白", m2kcal.group_mailbox("  ENG_A1  ", "me@example.
       == "eng_a1@example.com")
 check("group_mailbox 無網域回空", m2kcal.group_mailbox("ENG_A1", "nodomain") == "")
 
+# 25b) descendant_groups：用 path 前綴找子孫部門（find_group 遞迴的依據）
+#      path 是組織樹位置，形如 /ROOT/BU/DEPT/SUB，分隔符只有 "/"（實機確認過）
+_tree = [{"name": "ENG", "path": "/ORG/ENG", "href": "/e"},
+         {"name": "ENG_A", "path": "/ORG/ENG/ENG_A", "href": "/ea"},
+         {"name": "ENG_A1", "path": "/ORG/ENG/ENG_A/ENG_A1", "href": "/ea1"},
+         {"name": "ENG_A2", "path": "/ORG/ENG/ENG_A/ENG_A2", "href": "/ea2"},
+         {"name": "ENG_B", "path": "/ORG/ENG/ENG_B", "href": "/eb"},
+         # 陷阱：名字以 ENG_A 開頭但不是它的子孫，純字串 startswith 會誤中
+         {"name": "ENG_AX", "path": "/ORG/ENG/ENG_AX", "href": "/eax"},
+         {"name": "SALES", "path": "/ORG/SALES", "href": "/s"}]
+
+_desc = m2kcal.descendant_groups(_tree, "/ORG/ENG/ENG_A")
+check("descendant 取到直接子層與孫層",
+      sorted(g["name"] for g in _desc) == ["ENG_A1", "ENG_A2"])
+check("descendant 不含自己", "ENG_A" not in [g["name"] for g in _desc])
+check("descendant 不誤中同前綴的兄弟（ENG_AX 不是 ENG_A 的子孫）",
+      "ENG_AX" not in [g["name"] for g in _desc])
+check("descendant 多層都取得（ENG 底下含孫、曾孫）",
+      sorted(g["name"] for g in m2kcal.descendant_groups(_tree, "/ORG/ENG"))
+      == ["ENG_A", "ENG_A1", "ENG_A2", "ENG_AX", "ENG_B"])
+check("descendant 葉節點回空", m2kcal.descendant_groups(_tree, "/ORG/ENG/ENG_A/ENG_A1") == [])
+check("descendant 尾端斜線不影響",
+      len(m2kcal.descendant_groups(_tree, "/ORG/ENG/ENG_A/")) == 2)
+check("descendant path 為空時回空（不要把整棵樹當子孫）",
+      m2kcal.descendant_groups(_tree, "") == [])
+
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
                              dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")

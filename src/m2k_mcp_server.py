@@ -799,12 +799,14 @@ def _known_addresses(auth) -> set:
     return out
 
 
-def find_group(name: str, ctx: Context = None) -> str:
+def find_group(name: str, recursive: bool = True, ctx: Context = None) -> str:
     """把（模糊的）群組/部門名（如 'team_a1'）展開成成員 email 名單，供 book 帶入。
     優先查『公司通訊錄的正式部門群組』（CardDAV，用你的應用程式專用密碼即可，
     免 webmail session）；查無相符部門時，退回『你參與過的定期會議』湊名單。
     使用者說「約某某部門開會」這類群組名時先用這個展開；**多個候選或名單看來不對時，
-    務必把名單列給使用者確認再 book，絕不自行假設成員**。"""
+    務必把名單列給使用者確認再 book，絕不自行假設成員**。
+    recursive 預設 true：連同所有子部門的成員一起列（跨部門去重）——CardDAV 只回
+    直屬成員，不遞迴會漏掉整個子樹。只要該層直屬成員時傳 recursive=false。"""
     try:
         auth = _auth(ctx) or m2kcal.creds()
     except m2kcal.M2KError as err:
@@ -821,19 +823,44 @@ def find_group(name: str, ctx: Context = None) -> str:
         known = _known_addresses(auth)  # 用來確認群組信箱是否真的存在（見下）
         lines = [f"「{name}」在公司通訊錄找到 {len(dm)} 個部門" +
                  ("（請確認要哪個再 book）：" if len(dm) > 1 else "：")]
+        all_groups = _dir_groups(auth)
         for g in dm[:6]:
-            try:
-                emails = [em for _, em in m2kcal.directory_group_members(g["href"], auth)]
-            except Exception:
-                emails = []
-            lines.append(f"\n▸ {g['name']}  {g['path']}（{len(emails)} 人）")
+            def members_of(grp):
+                try:
+                    return [em for _, em in m2kcal.directory_group_members(grp["href"], auth)]
+                except Exception:
+                    return []
+
+            emails = members_of(g)
+            # CardDAV 的 REPORT 是 Depth:1，只回該集合的直屬成員；子部門要自己走。
+            # 不遞迴的話，問父層只會拿到直屬那幾位，底下整個子樹的人全漏掉。
+            subs = m2kcal.descendant_groups(all_groups, g["path"]) if recursive else []
+            sub_emails, seen_em = [], set(e.lower() for e in emails)
+            for sg in subs:
+                for em in members_of(sg):
+                    if em.lower() not in seen_em:
+                        seen_em.add(em.lower())
+                        sub_emails.append(em)
+            total = emails + sub_emails
+
+            head = f"\n▸ {g['name']}  {g['path']}（直屬 {len(emails)} 人"
+            head += f"、子部門 {len(sub_emails)} 人，合計 {len(total)} 人）" if subs else "）"
+            lines.append(head)
+            if subs:
+                # 看不到階層就不會知道名單該有多少人（A2）
+                lines.append(f"  含 {len(subs)} 個子部門：" +
+                             ", ".join(sg["name"] for sg in subs[:12]) +
+                             ("…" if len(subs) > 12 else ""))
+            elif recursive:
+                lines.append("  （底下沒有子部門）")
             box = m2kcal.group_mailbox(g["name"], auth[1])
             if box:
                 seen = "（你的往來紀錄中存在）" if box in known else "（推測，未見於你的往來紀錄，不確定是否存在）"
                 lines.append(f"  群組信箱：{box} {seen}")
-            lines.append("  成員：" + (", ".join(emails) if emails else "（讀不到成員）"))
-            if emails:
-                rec = ([box] if box and box in known else []) + emails
+            lines.append("  成員：" + (", ".join(total) if total else "（讀不到成員）"))
+            if total:
+                # 只帶父層群組信箱：子部門的群組信箱與個別成員重疊會讓同一人收好幾份
+                rec = ([box] if box and box in known else []) + total
                 lines.append("  ✦ book 建議 attendees（直接照抄這串）：" + ", ".join(rec))
         lines.append("\n說明：個別成員放進 attendees 才會每人收到邀請並能回覆出席；群組信箱"
                      "只是一個收件位址、不會展開成員，一起帶可讓群組也留一份紀錄。"
