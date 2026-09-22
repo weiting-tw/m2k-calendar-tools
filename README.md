@@ -256,6 +256,17 @@ docker run -d -p 8763:8763 -v m2k-data:/data m2k-calendar \
 
 ---
 
+## 開發前先裝 hook
+
+```bash
+git config core.hooksPath .githooks
+```
+
+擋下把公司內部資訊（信箱、部門代碼、組織樹路徑、內部主機）寫進 commit。
+CI 也有同一支掃描，但那是事後偵測——它 fail 時 commit 已經推上公開 repo 了，
+所以本機這道才是真正的防線。誤判時把合法用途加進
+`tests/check_no_org_info.py` 的 `ALLOW`，真的要略過用 `git commit --no-verify`。
+
 ## 功能測試怎麼做
 
 1. **使用者腳本離線測試**（最快、免帳密、免登入）：`npm install && npm test`

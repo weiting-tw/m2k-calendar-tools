@@ -1,0 +1,18 @@
+#!/bin/sh
+# 擋下把公司內部資訊寫進 commit 的改動。
+#
+# 為什麼要有這個：CI 的掃描是「事後偵測」——它 fail 的時候，commit 已經
+# push 到公開 repo 上了，撤不回來。真正的防線在本機，擋在 commit 之前。
+#
+# 安裝（每個 clone 各做一次）：
+#     git config core.hooksPath .githooks
+#
+# 真的要略過（例如確定是誤判、且已加進 ALLOW）：
+#     git commit --no-verify
+set -e
+python3 tests/check_no_org_info.py || {
+    echo ""
+    echo "commit 已中止。改掉上面列的地方，或確定誤判時把合法用途加進"
+    echo "tests/check_no_org_info.py 的 ALLOW。"
+    exit 1
+}

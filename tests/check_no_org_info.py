@@ -4,6 +4,11 @@
 執行:  python3 tests/check_no_org_info.py     （CI 與本地都跑這支）
 回傳:  0＝乾淨、1＝有命中（CI 會因此 fail）
 
+**在 CI 上不印出命中的實際內容**：這個 repo 與它的 Actions log 都是公開的，
+把抓到的信箱或部門代碼印在 log 裡等於換個地方洩漏一次，而且 log 不會隨著
+commit 被修掉而消失。CI 只說「哪個檔案、第幾行、哪一類」，足以定位；
+要看實際內容請在本機跑同一支。設 CHECK_ORG_SHOW=1 可強制顯示。
+
 為什麼需要：這個 repo 是公開的，而工具本身是對公司 webmail 寫的，很容易在
 註解、測試資料、範例裡不小心帶進真實信箱、部門代碼或組織樹路徑。靠人記得不可靠
 ——之前就發生過清乾淨後又在 docstring 寫回真實路徑。
@@ -78,6 +83,13 @@ def mask_allowed(text):
     return text
 
 
+def redacting():
+    """CI 環境預設遮蔽。GitHub Actions 會設 CI=true。"""
+    if os.environ.get("CHECK_ORG_SHOW") == "1":
+        return False
+    return os.environ.get("CI", "").lower() == "true"
+
+
 def main():
     hits = []
     for path in tracked_files():
@@ -97,10 +109,15 @@ def main():
         print("✓ 版控檔案中未發現公司內部資訊")
         return 0
 
+    hide = redacting()
     print(f"✗ 發現 {len(hits)} 處公司內部資訊，請改掉再提交：\n")
     for path, lineno, label, found, why in hits:
-        print(f"  {path}:{lineno}  [{label}] {found}")
+        shown = "（內容已遮蔽）" if hide else found
+        print(f"  {path}:{lineno}  [{label}] {shown}")
         print(f"      {why}")
+    if hide:
+        print("\n本紀錄是公開的，命中內容不印出來。"
+              "在本機跑 python3 tests/check_no_org_info.py 可看到實際內容。")
     print("\n（若確定是誤判，把合法用途加進本檔的 ALLOW）")
     return 1
 
