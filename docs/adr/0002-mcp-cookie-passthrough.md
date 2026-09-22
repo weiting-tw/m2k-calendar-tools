@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0003
 ---
 
 # MCP 查他人行事曆採 webmail Cookie 透傳，伺服器不持有

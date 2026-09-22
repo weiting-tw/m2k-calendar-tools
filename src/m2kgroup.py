@@ -10,8 +10,7 @@ GSS Mail2000 登入走 SAML SSO（/cgi-bin/saml_login），沒有帳密表單，
     export M2K_COOKIE="<整串 Cookie>"      # DevTools → Network → 任一請求 → Cookie
     python3 src/m2kgroup.py expand --dirid <部門路徑>
 
-實測（瀏覽器）：adb2main_mds 只靠 Cookie 就會回資料，**不需要** m / ssnid。
-舊版說明要求那兩個短效 token，是誤解；仍保留為選填，環境有需要時才帶。
+實測（瀏覽器）：adb2main_mds 只靠 Cookie 就會回資料。
 
 == 已驗證的 adb2 規格 ==
   端點   : GET /cgi-bin/adb2main_mds
@@ -73,11 +72,6 @@ def fetch_page(s, abid, dirid, page):
         "tofield": "widget",
         "pageno": page,
     }
-    # 選填：某些環境若真的需要短效 token，帶了也無害
-    for k, env in (("m", "M2K_M"), ("ssnid", "M2K_SSNID")):
-        v = os.environ.get(env)
-        if v:
-            params[k] = v
     r = s.get(f"{BASE}/cgi-bin/adb2main_mds", params=params, timeout=20)
     r.raise_for_status()
     return r.text

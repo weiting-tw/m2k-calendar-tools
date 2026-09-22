@@ -103,7 +103,7 @@ python3 src/m2kcal.py book --title "週會" --start "2026-07-10 14:00" --end "20
 
 ```bash
 pip install requests
-export M2K_M="<通訊錄網址的 m 參數>"; export M2K_SSNID="<ssnid>"; export M2K_COOKIE="<Cookie>"
+export M2K_COOKIE="key=<值>"   # 已登入 webmail → F12 → Application → Cookies → key
 python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
 ```
 
@@ -119,18 +119,19 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
   `find_person`（模糊人名查 email）、
   `list_calendars`
 
-**查同事行程需要 webmail Cookie**（排程端點只吃 webmail 登入 cookie，不吃 CalDAV 密碼；
-登入是 SAML，程式換不到）。從已登入的瀏覽器 DevTools → Network → 任一請求 → Request Headers
-找到名為 **`key`** 的 cookie（DevTools → Application → Cookies → mail.gss.com.tw；只有這一個是必要的，
-整串 Cookie 也可以），寫成 `key=<值>`，依模式提供：
-- stdio：`.env` 設 `M2K_COOKIE="key=<值>"`。
-- HTTP：每個請求帶 `X-M2K-Cookie: key=<值>` 標頭（`claude mcp add … --header`）。
-- OAuth（claude.ai Connectors）：連接時登入頁展開「選填：webmail Cookie」貼上，會加密封進 token。
+**查同事行程（`others_agenda`、`find_free_slots` 帶 attendees）預設不需額外設定**。排程端點
+只吃 webmail 登入 cookie、不吃 CalDAV 密碼，但伺服器會用你已設定的同一組帳號＋應用程式專用密碼
+（`M2K_USER`/`M2K_PASS`，OAuth 則是登入時輸入的那組）向 `/cgi-bin/login` 自動換一個 webmail
+session，換到的 cookie 只在記憶體快取（預設 10 分鐘）、不落地。因此 CalDAV 設好，查同事行程就能用。
 
-Cookie 為短效（通常數小時到數天），過期時工具會明講「Cookie 無效或已過期」，重貼即可。
-伺服器不儲存 Cookie；它只存在你的 client 設定或你自己持有的 token 裡。
-沒提供 Cookie 時，`others_agenda` 與 `find_free_slots` 帶 attendees 會回說明，
-仍可改用 webmail 使用者腳本的「查看與會者空檔」。
+進階：想用別的登入身分、或自動換失敗要手動覆蓋時，可自行提供 `key` cookie
+（已登入瀏覽器 DevTools → Application → Cookies → mail.gss.com.tw → `key`）：
+- stdio：`.env` 設 `M2K_COOKIE="key=<值>"`。
+- HTTP：每個請求帶 `X-M2K-Cookie: key=<值>` 標頭。
+- OAuth：連接時登入頁展開「選填：webmail Cookie」貼上。
+
+自動換或手動 cookie 過期時工具會自己重換一次；連自動登入都失敗（帳密不對）才會回錯誤說明，
+此時 `find_free_slots` 退回只算「對方已分享給你的行事曆」，或改用 webmail 使用者腳本。
 
 **find_person 的資料來源**（自動合併；前兩項零設定、跟著各使用者自己的憑證走，
 共用部署天生每人隔離）：

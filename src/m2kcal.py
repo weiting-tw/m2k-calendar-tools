@@ -1350,8 +1350,9 @@ def parse_schedule(data, who):
     code = int(data.get("rspCode") or 0)
     if code == -100:   # Invalid Session（實測）：cookie 壞了或過期
         raise M2KError("webmail Cookie 無效或已過期，請從已登入的瀏覽器重新複製 key= 那一個 cookie。")
-    if code == -102:
-        raise M2KError(f"查無此帳號：{who}")
+    if code == -102:   # 實測：查無帳號時 rspMsg 為空；路徑打錯時 rspMsg 是 "unknown request."
+        msg = (data.get("rspMsg") or "").strip()
+        raise M2KError(f"查無此帳號：{who}" if not msg else f"排程端點拒絕請求（{msg}）")
     if code != 0:
         raise M2KError(f"排程端點回 rspCode {code} {data.get('rspMsg') or ''}".rstrip())
     w = who.strip().lower()
@@ -1381,6 +1382,51 @@ def parse_schedule(data, who):
         })
     out.sort(key=lambda x: x["start"])
     return out
+
+
+# 用 CalDAV 那組帳號＋應用程式專用密碼，向 /cgi-bin/login 換一個 webmail session cookie（key）。
+# 實測：純 POST USERID+PASSWD 即可，不需 challenge；換到的 key 打排程端點正常。
+# 這讓「查他人行事曆」不必再手動貼 cookie——用已設定的同一組憑證即可，風險不變（單一用途、可撤銷）。
+_LOGIN_PATH = "/cgi-bin/login"
+_SESSION_TTL = 600            # 換到的 cookie 快取 10 分鐘，避免每次呼叫都重登
+_session_cache = {}           # user -> (cookie_str, expiry_epoch)
+_session_lock = threading.Lock()
+
+
+def login_cookie(auth):
+    """POST /cgi-bin/login 換 webmail session。回 'key=<值>' 字串；失敗丟 M2KError。"""
+    import requests
+    url, user, pwd = auth
+    try:
+        sess = requests.Session()
+        sess.post(M2K_BASE + _LOGIN_PATH,
+                  data={"USERID": user, "PASSWD": pwd, "lang": "tw"},
+                  headers={"User-Agent": "Mozilla/5.0 (m2k-calendar)",
+                           "Referer": M2K_BASE + _LOGIN_PATH + "?index=1&lang=tw"},
+                  timeout=30, allow_redirects=False)
+    except requests.RequestException as err:
+        raise M2KError(f"webmail 登入連線失敗：{err}")
+    key = sess.cookies.get("key")
+    if not key:
+        raise M2KError("webmail 登入沒拿到 session（帳號或應用程式專用密碼可能不對）。")
+    return f"key={key}"
+
+
+def session_cookie(auth, force=False):
+    """取一個可用的 webmail cookie（帶快取）。auth=(url,user,pwd)；缺 user/pwd 回空字串。"""
+    if not auth or not auth[1] or not auth[2]:
+        return ""
+    user = auth[1]
+    now = time.time()
+    with _session_lock:
+        if not force:
+            hit = _session_cache.get(user)
+            if hit and hit[1] > now:
+                return hit[0]
+    ck = login_cookie(auth)          # 不在鎖內做網路呼叫
+    with _session_lock:
+        _session_cache[user] = (ck, now + _SESSION_TTL)
+    return ck
 
 
 def _sched_get(cookie, email, st, et):

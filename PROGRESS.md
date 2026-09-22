@@ -2,6 +2,14 @@
 
 最後更新：2026-09-21（使用者腳本合併 + 他人行事曆走排程端點）
 
+## 2026-09-22 修正紀錄：自動換 webmail session，查同事行程免貼 Cookie，發 1.15.0
+- 實測 CalDAV 那組帳號＋應用程式專用密碼純 POST `/cgi-bin/login`（免 challenge）即換到 `key` session，
+  打排程端點正常。MCP 改為：沒有明確 Cookie 時用該請求的帳密自動換、記憶體快取 10 分鐘、過期自動重換。
+  `others_agenda`、`find_free_slots` 帶 attendees 因此免設定即可用；手動 Cookie 保留為覆蓋。ADR 0002→0003。
+- 清掉舊的 `M2K_M`/`M2K_SSNID` 短效 token 設定（m2kgroup 只靠 Cookie 即可）。
+- `rspCode -102` 有 rspMsg 時照實顯示（區分查無帳號與請求無效）。
+- 查證新版 GraphQL `/8/api/graphql` 無行事曆能力（見 docs/m2k-graphql-findings.md），維持 REST。
+
 ## 2026-09-21 修正紀錄（傍晚）：找回 8/19–8/20 遺失的 10 個 commit，發 1.14.0
 - 8/25 的 `git filter-branch` 改寫讓 main 少了 8/19–8/20 的 1.7.0～1.13.0（`find_group`、
   `agenda`/`list_events` 帶 `person` 查已分享行事曆、行事曆 UI 多人疊加、`find_free_slots`

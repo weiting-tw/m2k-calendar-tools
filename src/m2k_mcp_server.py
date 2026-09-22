@@ -100,11 +100,9 @@ def _auth(ctx):
 COOKIE_HEADER = "x-m2k-cookie"
 
 
-def _cookie(ctx):
-    """本次呼叫的 webmail Cookie（查他人行事曆用），依模式：
-    OAuth 模式 → 登入時貼在登入頁、加密封在 token 裡的 cookie。
-    HTTP 模式  → 該請求的 X-M2K-Cookie 標頭，不回退到環境變數（同 _auth 的理由）。
-    stdio 模式 → 環境變數 M2K_COOKIE。沒有就回空字串，由呼叫端明講。"""
+def _explicit_cookie(ctx):
+    """使用者明確提供的 webmail Cookie（優先於自動換）：
+    OAuth → token 內；HTTP → X-M2K-Cookie 標頭；stdio → M2K_COOKIE。沒有回空字串。"""
     tok = get_access_token()
     if tok is not None and getattr(tok, "m2k_user", ""):
         return getattr(tok, "m2k_cookie", "") or ""
@@ -114,19 +112,44 @@ def _cookie(ctx):
     return os.environ.get("M2K_COOKIE", "")
 
 
-def _others_schedule(cookie, emails, s, e):
-    """逐一查同事行程。回 ({email: 事件清單 或 M2KError}, 被人數上限截掉的 email 清單)。"""
+def _cookie(ctx, force=False):
+    """取 webmail Cookie（查他人行事曆用）。先看使用者明確提供的；沒有就用本次的
+    CalDAV 帳密（應用程式專用密碼）向 /cgi-bin/login 自動換一個、帶快取。
+    兩者都拿不到才回空字串，由呼叫端明講。force=True 強制重換（session 過期時）。"""
+    if not force:
+        explicit = _explicit_cookie(ctx)
+        if explicit.strip():
+            return explicit
+    try:
+        return m2kcal.session_cookie(_auth(ctx) or m2kcal.creds(), force=force)
+    except m2kcal.M2KError:
+        return ""
+
+
+def _others_schedule(cookie, emails, s, e, ctx=None):
+    """逐一查同事行程。回 ({email: 事件清單 或 M2KError}, 被人數上限截掉的 email 清單)。
+    cookie 是自動換來的、中途過期時，用 ctx 重換一次再重試（貼上來的 cookie 不重換）。"""
     seen, todo = set(), []
     for em in emails:
         k = (em or "").strip().lower()
         if k and k not in seen:
             seen.add(k); todo.append(k)
     shown, dropped = todo[:m2kcal.MAX_SCHED_PEOPLE], todo[m2kcal.MAX_SCHED_PEOPLE:]
-    out = {}
+    out, relogged = {}, False
     for em in shown:
         try:
             out[em] = m2kcal.fetch_schedule(cookie, em, s, e)
         except m2kcal.M2KError as err:
+            # session 過期且是自動換來的 → 重換一次再試這人
+            if ctx is not None and not relogged and "過期" in str(err):
+                relogged = True
+                fresh = _cookie(ctx, force=True)
+                if fresh.strip() and fresh != cookie:
+                    cookie = fresh
+                    try:
+                        out[em] = m2kcal.fetch_schedule(cookie, em, s, e); continue
+                    except m2kcal.M2KError as err2:
+                        err = err2
             out[em] = err
     return out, dropped
 
@@ -986,9 +1009,9 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
     duration_minutes 需要的長度；start 'YYYY-MM-DD'（預設今天）起 days 天；
     day_start/day_end 每天的可排時段；include_weekends 是否含週末；
     attendees 一併扣掉這些同事的忙碌時段、回傳大家都有空的時間（email 清單，
-    人名先用 find_person / find_group 查）。有 webmail Cookie 時查得到任何人（排程端點）；
-    沒有時只能讀「對方已分享給你的行事曆」，並列出未納入計算的人。"""
-    cookie = _cookie(ctx).strip() if attendees else ""
+    人名先用 find_person / find_group 查）。會用已設定的帳密自動換 webmail session
+    查任何人（排程端點）；只有登入失敗時才退回「對方已分享給你的行事曆」並列出未納入者。"""
+    cookie = _cookie(ctx).strip() if attendees else ""   # 先試明確提供的，再用帳密自動換
     try:
         s = m2kcal.parse_when(start) if start else dt.datetime.now()
         e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1001,7 +1024,7 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
         others_note = []
         if attendees and cookie:
-            others, dropped = _others_schedule(cookie, attendees, s, e)
+            others, dropped = _others_schedule(cookie, attendees, s, e, ctx)
             failed = [em for em, evs in others.items() if isinstance(evs, Exception)]
             for em, evs in others.items():
                 if not isinstance(evs, Exception):
@@ -1049,7 +1072,7 @@ def others_agenda(emails: list[str], start: str = "", days: int = 7,
     """看其他同事的行程（不必對方分享行事曆）。emails 為 email 清單（人名先用
     find_person 查），start 'YYYY-MM-DD' 預設今天，看 days 天（預設 7）。
     回傳依人、依天分組的行程，含對方的回覆狀態（已拒絕/暫定/未回覆）。
-    需要 webmail Cookie；沒有時會明講怎麼提供。"""
+    會用已設定的帳密自動換 webmail session；帳密不對或登入失敗才會回錯誤說明。"""
     cookie = _cookie(ctx)
     if not cookie.strip():
         return "錯誤：" + m2kcal.NO_COOKIE_HINT
@@ -1061,7 +1084,7 @@ def others_agenda(emails: list[str], start: str = "", days: int = 7,
         e = s + dt.timedelta(days=days)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
-    others, dropped = _others_schedule(cookie, emails, s, e)
+    others, dropped = _others_schedule(cookie, emails, s, e, ctx)
     head = f"{s:%Y-%m-%d} ～ {e - dt.timedelta(days=1):%Y-%m-%d}，{len(others)} 人的行程："
     body = m2kcal.render_schedule(others)
     tail = (f"\n⚠ 一次最多查 {m2kcal.MAX_SCHED_PEOPLE} 人，未查：" + ", ".join(dropped)) if dropped else ""
