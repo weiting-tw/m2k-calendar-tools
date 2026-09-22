@@ -673,7 +673,7 @@ def cmd_agenda(args):
     print(render_grouped(events))
 
 
-TZID = "Asia/Taipei"  # GSS 在台灣
+TZID = "Asia/Taipei"  # 站台在台灣
 
 
 def _zulu(t):

@@ -65,7 +65,7 @@
       }
       raw.books = books;
       check("A1 列出通訊錄", books.length > 0, books.map((b) => b.abid || "(空=個人)").join(" | "));
-      // production 的取法：正則要求非空，所以會跳過個人通訊錄(abid 為空)拿到 GSS
+      // production 的取法：正則要求非空，所以會跳過個人通訊錄(abid 為空)拿到公司通訊錄
       const prod = (/do_switchto\(\s*['"]([^'"]+)['"]/.exec(r.text) || [])[1] || "";
       raw.prodAbid = prod;
       check("A2 production 取到非空 abid", !!prod, prod || "(空 → 後面全會失敗)");

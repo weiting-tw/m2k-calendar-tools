@@ -4,7 +4,7 @@ m2kgroup — Mail2000 (m2k) 通訊錄部門展開工具
 把公司通訊錄的部門展開成成員 email，供 book 時逐一帶入與會者。
 
 == 授權：只需要 Cookie ==
-GSS Mail2000 登入走 SAML SSO（/cgi-bin/saml_login），沒有帳密表單，
+Mail2000 登入走 SAML SSO（/cgi-bin/saml_login），沒有帳密表單，
 所以獨立程式「無法自己登入」——必須從已登入的瀏覽器複製 Cookie：
 
     export M2K_COOKIE="<整串 Cookie>"      # DevTools → Network → 任一請求 → Cookie

@@ -75,7 +75,7 @@ calendarShare, userSchedule, groupSchedule, eventInstances, calendarModuleEnable
 | 偏好與系統設定 | `/cgi-bin/cal/calsrv/api/default/preference`、`/api/default/system/getSystemConfig` |
 | 行事曆清單 | `/cgi-bin/cal/calsrv/feeds/default/{default,subscribed,public}/` |
 | 權限 | `/cgi-bin/cal/calsrv/api/default/acl/{default,subscribed,public}/` |
-| 提醒 | `/cgi-bin/cal/calsrv/feeds/default/public/{id}@gss.com.tw/events/alarm/?starttime=&endtime=` |
+| 提醒 | `/cgi-bin/cal/calsrv/feeds/default/public/{id}@<網域>/events/alarm/?starttime=&endtime=` |
 | 事件展開 | `/cgi-bin/cal/calsrv/feeds/default/default/1/events/instances/?starttime=&endtime=` |
 
 值得注意：光是載入首頁，提醒查詢就對每一本公用行事曆各發一支請求，一口氣打出**超過 110 支** `events/alarm/`。原廠 UI 本身就是 N+1 扇出模式。

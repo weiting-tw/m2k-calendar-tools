@@ -104,7 +104,7 @@ Allow: OPTIONS, GET, HEAD, DELETE, PROPFIND, PUT, PROPPATCH, COPY, MOVE, REPORT
 
 ## ⚠️ 重大限制：登入是 SAML SSO
 
-分析登入流程時發現，GSS Mail2000 走 **SAML 單一登入（`/cgi-bin/saml_login`）**，沒有傳統帳號密碼表單。影響：
+分析登入流程時發現，Mail2000 走 **SAML 單一登入（`/cgi-bin/saml_login`）**，沒有傳統帳號密碼表單。影響：
 
 - **獨立終端機 CLI 無法自己用帳密登入**去打通訊錄（adb2）——SAML 需要瀏覽器導向 IdP、可能還有 MFA，程式無法自動完成。
 - 通訊錄（`adb2*`）與網頁行事曆（`calsrv`）都靠**登入後的 session token `m`**，而這個 `m` 是短效、且各模組不同（信箱、行事曆、通訊錄的 `m` 都不一樣），不適合「貼一次 token 長期用」。
@@ -157,4 +157,4 @@ python3 src/m2kcal.py book --title "專案週會" \
 
 ## 分析邊界
 
-全程只做唯讀探測（OPTIONS / PROPFIND），沒有建立、修改或刪除任何會議，也沒有處理你的密碼。BizForm 連接器另外查過，它是 GSS 的表單系統、沒有行事曆端點，與本任務無關。
+全程只做唯讀探測（OPTIONS / PROPFIND），沒有建立、修改或刪除任何會議，也沒有處理你的密碼。另一個內部連接器也查過，它沒有行事曆端點，與本任務無關。

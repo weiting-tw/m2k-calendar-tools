@@ -92,7 +92,7 @@ Docker Hub、有新版就自動拉取並重建容器（資料在 volume，不受
   （輸入 m2k 帳號＋**應用程式專用密碼**，於 webmail 設定產生）。
 - **Claude Desktop**（`claude_desktop_config.json`）：
   ```json
-  "gss-calendar": {
+  "m2k-calendar": {
     "command": "npx",
     "args": ["-y", "mcp-remote@0.1.37", "https://m2kcal.xxx.synology.me/mcp"]
   }

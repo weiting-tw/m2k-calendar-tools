@@ -44,16 +44,20 @@ DEPT_CODES = [
 ]
 
 RULES = [
-    ("公司信箱", re.compile(r"[A-Za-z0-9._%+-]+@gss\.com\.tw"),
+    ("公司信箱", re.compile(r"[A-Za-z0-9._%+-]+@gss\.com\.tw", re.I),
      "真實信箱不進版控；測試資料請用 @example.com"),
-    ("通訊錄目錄", re.compile(r"\bGSS_(?:EMP|PT|ALL)\b"),
+    ("通訊錄目錄", re.compile(r"\bGSS_(?:EMP|PT|ALL)\b", re.I),
      "組織樹目錄名；說明文字請寫成 /ROOT/BU/DEPT 這種泛稱"),
     ("通訊錄 ID", re.compile(r"\bPA\.\d{3}\b"),
      "通訊錄 abid；測試請用 BOOK1 之類的假值"),
-    ("內部主機", re.compile(r"\b(?:git|yourls)\.gss\.com\.tw\b"),
+    ("內部主機", re.compile(r"\b(?:git|yourls)\.gss\.com\.tw\b", re.I),
      "內部服務主機名"),
     ("部門代碼", re.compile(r"\b(?:" + "|".join(DEPT_CODES) + r")\b", re.I),
      "實際部門代碼；測試請用 UNIT1 / ENG_A 這種虛構名"),
+    # 散文裡的公司縮寫（「GSS 的表單系統」「GSS 在台灣」這種）。結構化樣式抓不到，
+    # 但它同樣是公司識別資訊；合法用途已在 ALLOW 先遮掉。
+    ("公司縮寫", re.compile(r"\bGSS\b", re.I),
+     "散文裡的公司名；描述請寫成「公司」「站台」或直接省略"),
 ]
 
 SKIP_DIRS = {".git", "node_modules", ".venv", ".omc", "dist"}
@@ -79,7 +83,7 @@ def tracked_files():
 def mask_allowed(text):
     """把合法用途換成等長佔位，位移不變，行號才不會跑掉。"""
     for pat in ALLOW:
-        text = re.sub(pat, lambda m: "\0" * len(m.group(0)), text)
+        text = re.sub(pat, lambda m: "\0" * len(m.group(0)), text, flags=re.I)
     return text
 
 

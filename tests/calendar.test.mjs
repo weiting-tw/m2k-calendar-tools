@@ -22,7 +22,7 @@ const PAGE = 25;   // 伺服器每頁固定筆數（live 探針 C 組驗證過�
 const ROOT = "/org";
 let gb, dom, realSetTimeout;
 
-/** 依 do_switchto 慣例回通訊錄清單：第一個 abid 是空的（個人），第二個才是 GSS */
+/** 依 do_switchto 慣例回通訊錄清單：第一個 abid 是空的（個人），第二個才是公司通訊錄 */
 const treeHtml = () =>
   `<a onclick="do_switchto('', '0')">personal</a><a onclick="do_switchto('BOOK1', '2')">company</a>`;
 
@@ -287,7 +287,7 @@ describe("addOne / addMany — 加入與會者", () => {
 
   test("大小寫不同的 email 也認得出自己的 chip", async () => {
     speedUpTimers(); wireWidget();
-    assert.equal(await gb.addOne("Flora_HU@GSS.com.tw"), true);
+    assert.equal(await gb.addOne("Mixed_CASE@Example.TEST"), true);
   });
 
   test("欄位藏著時直接說明原因，不逐一白等", async () => {
