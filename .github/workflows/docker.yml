@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 公司內部資訊掃描（信箱／部門代碼／組織樹路徑／內部主機）
+        # 這個 repo 是公開的，而工具是對公司 webmail 寫的，很容易在註解或測試資料
+        # 裡帶進真實資訊。放最前面：髒東西不該等測試跑完才發現。
+        run: python tests/check_no_org_info.py
+
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -28,9 +36,6 @@ jobs:
           npm ci
           npm test
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
       - name: 行事曆離線單元測試
         # 只需 icalendar：caldav 是延遲載入的，純函式測試用不到（見 m2kcal._caldav）
         run: |

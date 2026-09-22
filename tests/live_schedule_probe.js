@@ -7,9 +7,9 @@
  *
  * 用法：
  *   1. 在已登入的 Mail2000 行事曆頁開 DevTools Console，貼上本檔全文
- *   2. await schedprobe("colleague@gss.com.tw")                    // 一位「沒分享給你」的同事
- *      await schedprobe("colleague@gss.com.tw", { org: "sec_02@gss.com.tw" })   // 順便查組織信箱
- *      await schedprobe("colleague@gss.com.tw", { self: "me@gss.com.tw" })      // 自動抓不到自己 email 時手動給
+ *   2. await schedprobe("colleague@example.com")                   // 一位「沒分享給你」的同事
+ *      await schedprobe("colleague@example.com", { org: "group_box@example.com" })  // 順便查組織信箱
+ *      await schedprobe("colleague@example.com", { self: "me@example.com" })        // 自動抓不到自己 email 時手動給
  *   3. 每項印 PASS / FAIL / SKIP / INFO；結束後 window.__schedprobe 有原始回應可複製
  *
  * 唯讀：只發 GET，不改任何狀態。
@@ -126,7 +126,9 @@
     } else say("SKIP", "C 未指定 org，略過組織信箱");
 
     /* ---- D. 不存在的帳號 ---- */
-    const d = await get(url("no-such-user-zz@gss.com.tw"));
+    // 網域取自受測位址：寫死公司網域既不該進版控，換環境也會測不出「查無此帳號」
+    const ghostDomain = (other.split("@")[1] || "example.com");
+    const d = await get(url("no-such-user-zz@" + ghostDomain));
     raw.fixtures.ghost = d.json || d.text.slice(0, 300);
     say("INFO", "D1 不存在的帳號回什麼（腳本會把非 0 的 rspCode 顯示在該列）", `HTTP ${d.status}，rspCode=${d.json && d.json.rspCode}，rspMsg=${d.json && d.json.rspMsg}，instances=${d.json && d.json.instances ? d.json.instances.length : "-"}`);
 
@@ -135,5 +137,5 @@
     return results;
   }
   window.schedprobe = schedprobe;
-  console.log("已載入。執行：await schedprobe(\"colleague@gss.com.tw\", { org: \"sec_02@gss.com.tw\" })");
+  console.log("已載入。執行：await schedprobe(\"colleague@example.com\", { org: \"group_box@example.com\" })");
 })();
