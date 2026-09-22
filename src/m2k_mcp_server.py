@@ -1128,18 +1128,18 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         p = m2kcal.connect(auth)
         cal = m2kcal.pick_calendar(p)
         fb = cal.freebusy_request(s, e)
-        busy = m2kcal.parse_freebusy(
+        own_busy = m2kcal.parse_freebusy(
             fb.data if isinstance(getattr(fb, "data", None), str) else str(fb.data))
         others_note = []
-        busy_by = {}          # {email: [(s,e)]}，湊不出全員空檔時要指得出是誰擋住
+        # 每人各自一份。別把它們累加回 own_busy——次佳解要靠「誰的忙碌是誰的」
+        # 才算得出缺誰，混在一起的話「（你）」會背下所有人的忙碌。
+        busy_by = {}          # {email: [(s,e)]}
         if attendees and cookie:
             others, dropped = _others_schedule(cookie, attendees, s, e, ctx)
             failed = [em for em, evs in others.items() if isinstance(evs, Exception)]
             for em, evs in others.items():
                 if not isinstance(evs, Exception):
-                    b = m2kcal.busy_periods(evs)
-                    busy += b
-                    busy_by[em] = b
+                    busy_by[em] = m2kcal.busy_periods(evs)
             # 有人查不到就不能說「大家都有空」——先講清楚，結果照給
             if failed:
                 others_note.append("⚠ 這些人查不到，結果不含他們：" + "；".join(
@@ -1149,21 +1149,21 @@ def find_free_slots(duration_minutes: int = 60, start: str = "", days: int = 7,
         elif attendees:
             # 沒 Cookie → 只能讀「對方已分享給你的行事曆」；讀不到的明確列出
             sbusy, missing = m2kcal.busy_from_shared(p, attendees, s, e)
-            busy += sbusy
+            busy_by["（已分享的與會者）"] = sbusy
             got = len(attendees) - len(missing)
             others_note.append(f"（沒有 webmail Cookie，他人忙碌時段取自其分享給你的行事曆，已納入 {got} 人；"
                                "要查未分享的人請提供 Cookie，見 others_agenda 說明）")
             if missing:
                 others_note.append("⚠ 這些人沒有把行事曆分享給你，未納入計算：" + ", ".join(missing))
-        slots = m2kcal.free_slots(busy, s, e, duration_minutes,
+        by_person = {"（你）": own_busy, **busy_by}
+        everyone = [iv for periods in by_person.values() for iv in periods]
+        slots = m2kcal.free_slots(everyone, s, e, duration_minutes,
                                   day_start, day_end, include_weekends)
         # 全員湊不出來時，改給「少幾個人就能開」的次佳解並標出缺誰
         ranked = []
         if not slots and busy_by:
-            mine = {"（你）": busy}
-            mine.update(busy_by)
             ranked = [x for x in m2kcal.free_slots_ranked(
-                mine, s, e, duration_minutes, day_start, day_end,
+                by_person, s, e, duration_minutes, day_start, day_end,
                 include_weekends, max_missing=2) if x[2]][:8]
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
