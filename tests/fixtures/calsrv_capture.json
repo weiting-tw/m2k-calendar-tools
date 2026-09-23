@@ -1,0 +1,163 @@
+{
+ "create_request": {
+  "feeds": "default",
+  "calendar_id": "1",
+  "allday": "false",
+  "dtstart": "20260923T190000",
+  "dtend": "20260923T193000",
+  "summary": "[測試] 請忽略",
+  "offset": "28800",
+  "send_meeting_mail": "false",
+  "lang": "tw",
+  "orig_feeds": "default",
+  "orig_calendar_id": "1",
+  "is_new": "1",
+  "attendee_num": "1",
+  "attendee_role1": "REQ-PARTICIPANT",
+  "attendee_cn1": "user_a",
+  "attendee1": "mailto:user_a@example.com",
+  "timezone_dtstart": "Asia/Taipei@28800",
+  "timezone_dtend": "Asia/Taipei@28800"
+ },
+ "create_response": {
+  "rspCode": 0,
+  "rspMsg": "",
+  "event": {
+   "timezone": "Asia/Taipei=28800~28800\tAsia/Taipei=28800~28800",
+   "dtstamp": 1790139952,
+   "uid": "u901@example.com",
+   "dtstart": 1790161200,
+   "cls": 1,
+   "created": 1790139952,
+   "description": "",
+   "last_mod": 1790139952,
+   "location": "",
+   "organizer": "mailto:me@example.com",
+   "priority": 5,
+   "sequence": 0,
+   "status": 9,
+   "summary": "[測試] 請忽略",
+   "url": "",
+   "recur_id": "",
+   "rrule": null,
+   "duration": 0,
+   "attendee": [
+    {
+     "attendee_cn": "user_a",
+     "attendee_role": 1,
+     "attendee_reply_status": 0,
+     "attendee_type": 5,
+     "attendee": "mailto:user_a@example.com",
+     "id": 1001
+    }
+   ],
+   "exdate": null,
+   "rdate": null,
+   "alarm": null,
+   "resources": null,
+   "transp": 1,
+   "dtend": 1790163000,
+   "creator": "me@example.com",
+   "endtime": 1790163000,
+   "info": 128,
+   "obj_type": 2,
+   "file_name": "u901@example.com",
+   "calendar_id": "1",
+   "ics_id": 901,
+   "id": 901
+  }
+ },
+ "update_request": {
+  "feeds": "default",
+  "calendar_id": "1",
+  "allday": "false",
+  "dtstart": "20260923T190000",
+  "dtend": "20260923T193000",
+  "description": "",
+  "summary": "[測試] 請忽略",
+  "location": "",
+  "offset": "28800",
+  "send_meeting_mail": "true",
+  "lang": "tw",
+  "orig_feeds": "default",
+  "orig_calendar_id": "1",
+  "orig_id": "901",
+  "is_new": "0",
+  "attendee_num": "1",
+  "attendee_reply_status1": "NEEDS-ACTION",
+  "attendee_role1": "REQ-PARTICIPANT",
+  "attendee_cn1": "user_a",
+  "attendee1": "mailto:user_a@example.com",
+  "timezone_dtstart": "Asia/Taipei@28800",
+  "timezone_dtend": "Asia/Taipei@28800"
+ },
+ "update_response": {
+  "rspCode": 0,
+  "rspMsg": "",
+  "event": {
+   "timezone": "Asia/Taipei=28800~28800\tAsia/Taipei=28800~28800",
+   "dtstamp": 1790140113,
+   "uid": "u901@example.com",
+   "dtstart": 1790161200,
+   "cls": 1,
+   "created": 1790139952,
+   "description": "",
+   "last_mod": 1790140113,
+   "location": "",
+   "organizer": "mailto:me@example.com",
+   "priority": 5,
+   "sequence": 1,
+   "status": 9,
+   "summary": "[測試] 請忽略",
+   "url": "",
+   "recur_id": "",
+   "rrule": null,
+   "duration": 0,
+   "attendee": [
+    {
+     "attendee_cn": "user_a",
+     "attendee_role": 1,
+     "attendee_reply_status": 0,
+     "attendee_type": 5,
+     "attendee": "mailto:user_a@example.com",
+     "id": 1002
+    }
+   ],
+   "exdate": null,
+   "rdate": null,
+   "alarm": null,
+   "resources": null,
+   "transp": 1,
+   "dtend": 1790163000,
+   "creator": "me@example.com",
+   "endtime": 1790163000,
+   "info": 128,
+   "obj_type": 2,
+   "id": 901,
+   "file_name": "u901@example.com",
+   "calendar_id": "1",
+   "ics_id": 901,
+   "rspResult": {
+    "1": 1,
+    "0": 0
+   }
+  }
+ },
+ "delete_request": {
+  "feeds": "default",
+  "calendar_id": "1",
+  "id": "901",
+  "send_meeting_mail": "true"
+ },
+ "delete_response": {
+  "rspCode": 0,
+  "rspMsg": "",
+  "events": {
+   "rspResult": {
+    "1": 1,
+    "0": 0
+   }
+  }
+ },
+ "_note": "webmail calsrv 錄下的真實請求/回應形狀，已去識別化：信箱換成 @example.com、id 換成假值、不含 cookie。"
+}

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議（走 CalDAV）。
+m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議。
 
-範圍：查詢自己的行事曆 + 建立會議（CalDAV，應用程式專用密碼）。
+範圍：查詢自己的行事曆（CalDAV，應用程式專用密碼）+ 建立／修改／刪除會議
+      （webmail 原生 calsrv API：用同一組帳密自動換 webmail session；有與會者時伺服器
+      會把會議寫進對方行事曆並寄通知信，見 docs/adr/0004）。
       看同事行程有兩條路：對方已分享給你的，agenda/list_events 帶 person 走 CalDAV
       （不需 Cookie）；任何人（含未分享）用 others_agenda、find_free_slots 帶 attendees，
       走 webmail 排程端點，需要使用者從已登入瀏覽器複製的 webmail Cookie：stdio 用
@@ -62,7 +64,6 @@ import sys
 import threading
 import time
 import datetime as dt
-import uuid
 from typing import Any
 
 try:
@@ -73,6 +74,7 @@ except ImportError:
 
 import m2kcal  # 重用既有 CalDAV / ICS 邏輯
 import m2kfree  # 共同空檔
+import m2knative  # 會議寫入（webmail 原生 API）
 from _version import __version__
 
 m2kcal.load_dotenv()
@@ -232,10 +234,7 @@ def _overlap_note(cal, s, e, exclude_uid=None) -> str:
 
 def _notify_note(auth, ics: str, method: str, subject: str, body: str,
                  attendees: list[str]) -> str:
-    """寄 iMIP 通知信（用使用者自己的 SMTP 身分），回報告文字。失敗不拋錯。
-    寄信能力**預設關閉**（保守）；管理員要開放才設 M2K_DISABLE_NOTIFY=0。"""
-    if os.environ.get("M2K_DISABLE_NOTIFY", "1").strip().lower() not in ("0", "false", "no"):
-        return "  （此部署預設停用寄信功能；管理員可設 M2K_DISABLE_NOTIFY=0 開放）"
+    """寄 iMIP 通知信（用使用者自己的 SMTP 身分），回報告文字。失敗不拋錯。"""
     to = [a for a in (attendees or []) if a.strip()
           and a.strip().lower() != auth[1].lower()]  # 不用通知自己
     if not to:
@@ -248,27 +247,47 @@ def _notify_note(auth, ics: str, method: str, subject: str, body: str,
         return f"  ⚠ 通知信寄送失敗：{e}"
 
 
+def _calsrv(ctx, me: str) -> "m2knative.Calsrv":
+    """寫入用的 webmail 原生 API。cookie 取法同查他人行程；過期時重換一次。
+    me 是登入帳號，用來分辨會議是不是自己召集的。"""
+    cookie = _cookie(ctx).strip()
+    if not cookie:
+        raise m2kcal.M2KError("寫入行事曆需要 webmail session，但用目前的帳密換不到"
+                              "（請確認應用程式專用密碼）。")
+    return m2knative.Calsrv(cookie, refresh=lambda: _cookie(ctx, force=True), me=me)
+
+
+def _caldav_start(ics_info: dict):
+    """parse_ics 的 start（'YYYY-MM-DD HH:MM' 或 'YYYY-MM-DD (全天)'）→ datetime，
+    給原生 API 找 id 時縮小範圍用。讀不懂回 None。"""
+    try:
+        return m2kcal.parse_when((ics_info.get("start") or "").replace(" (全天)", ""))
+    except m2kcal.M2KError:
+        return None
+
+
 def book(title: str, start: str, end: str = "", location: str = "",
          description: str = "", url: str = "", attendees: list[str] | None = None,
          confirmed_attendees: bool = False,
          repeat: str = "", repeat_until: str = "",
          repeat_byday: list[str] | None = None, repeat_interval: int = 0,
          reminder_minutes: int = 0, all_day: bool = False, calendar: str = "",
-         notify: bool = False, ctx: Context = None) -> str:
+         ctx: Context = None) -> str:
     """建立會議。
     title 標題；start/end 時間 'YYYY-MM-DD HH:MM'（end 省略則 +1 小時，台北時間）；
-    location 地點；description 描述；url 視訊會議連結（寫進 iCalendar 的 URL 屬性，
-    多數客戶端會渲染成「加入會議」，不要把長網址塞進 description）；
+    location 地點；description 描述；url 視訊會議連結（寫在描述第一行「會議連結: …」，
+    不要再把同一個網址塞進 description）；
     attendees 與會者 email 清單（建立前會健檢：格式錯誤、伺服器查無帳號的位址會擋下來，
-    把名單列給使用者確認後再帶 confirmed_attendees=true 重送）；
+    把名單列給使用者確認後再帶 confirmed_attendees=true 重送）。
+    **有與會者時，建立的當下伺服器就會寄會議邀請給每位與會者，並把會議寫進他們的
+    行事曆（未回覆狀態）**——這是對外動作，時段與名單要先讓使用者確認再建立；
     repeat 重複頻率 daily/weekly/monthly（省略＝不重複）；repeat_until 重複截止 'YYYY-MM-DD'；
     repeat_byday 指定星期（weekly 用，如 ["TU","TH"]＝每週二四；monthly 可帶序數如 ["3FR"]＝
     每月第三個週五）；repeat_interval 每 N 個週期一次（如 weekly+2＝每兩週）；
     reminder_minutes 開始前 N 分鐘提醒（0＝不提醒）；
     all_day=true 建全天事件（start/end 給 'YYYY-MM-DD'，end 省略＝單日）；
-    calendar 指定寫入的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）；
-    notify=true 時以你的名義寄標準會議邀請信（iMIP）給與會者——寄信是對外動作，
-    使用者明確要求通知才帶 true。若時段與現有行程重疊會附警告。
+    calendar 指定寫入的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。
+    若時段與現有行程重疊會附警告。
     使用者以**部門／群組名**指定與會者時（如「約 XX 部門開會」），**務必先呼叫
     find_group 取得當前名單**，並照它的「建議 attendees」帶入（＝群組信箱＋個別成員）；
     不要憑記憶或先前對話的舊名單，成員會異動、也會漏掉群組信箱。
@@ -289,7 +308,6 @@ def book(title: str, start: str, end: str = "", location: str = "",
             rrule = m2kcal.compose_rrule(repeat, until=u, byday=repeat_byday,
                                          interval=repeat_interval)
         auth = _auth(ctx) or m2kcal.creds()
-        _, user, pwd = auth        # 不要叫 url：會蓋掉參數裡的會議連結
         # 壞位址會被原樣寫進事件、之後沒人會發現；先擋下來讓使用者確認
         blockers, vet_notes = _vet_note(auth, attendees)
         if blockers and not confirmed_attendees:
@@ -299,34 +317,31 @@ def book(title: str, start: str, end: str = "", location: str = "",
                       "要改名單就把 attendees 換掉再送。")
         cal = _cal(auth, calendar)
         note = "" if all_day else _overlap_note(cal, s, e)
-        uid = str(uuid.uuid4())
-        ics = m2kcal.build_ics(title, s, e, location, description,
-                               attendees=attendees, organizer=user, uid=uid, url=url,
-                               rrule=rrule, reminder_minutes=reminder_minutes,
-                               all_day=all_day)
-        put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth)
+        cs = _calsrv(ctx, auth[1])
+        if calendar.strip():
+            cs.use_calendar(calendar)
+        form = m2knative.new_form(title, s, e, location=location,
+                                  description=description, url=url,
+                                  attendees=attendees, rrule=rrule,
+                                  reminder_minutes=reminder_minutes, all_day=all_day,
+                                  calendar_id=cs.calendar_id)
+        info = m2knative.info(m2knative.create(cs, form))
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     lines = (["⚠ 與會者名單有重複風險："] + vet_notes + [""] if vet_notes else []) + [
         "已建立並驗證：",
-             f"  標題: {info.get('SUMMARY', title)}",
-             f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"
-             + ("（全天）" if all_day else "")]
+             f"  標題: {info['SUMMARY'] or title}",
+             f"  時間: {info['start']} → {info['end']}",
+             f"  id: {info['uid']}"]
     if rrule:
         lines.append(f"  重複: {rrule}")
     if reminder_minutes:
         lines.append(f"  提醒: 開始前 {reminder_minutes} 分鐘")
-    if put_status not in (200, 201, 204):
-        lines.append(f"  （伺服器 PUT 回 {put_status}，但已驗證事件確實建立）")
-    if info.get("location"):
+    if info["location"]:
         lines.append(f"  地點: {info['location']}")
-    if info.get("attendees"):
+    if info["attendees"]:
         lines.append("  與會者: " + ", ".join(info["attendees"]))
-    if notify:
-        lines.append(_notify_note(auth, ics, "REQUEST",
-                                  f"會議邀請：{title}",
-                                  f"{auth[1]} 邀請你參加「{title}」（{start}）。",
-                                  info.get("attendees") or attendees or []))
+        lines.append("  已由伺服器寄出會議邀請，並寫入與會者的行事曆（未回覆）。")
     if note:
         lines.append(note)
     return "\n".join(lines)
@@ -341,7 +356,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                  repeat_byday: list[str] | None = None, repeat_interval: int = 0,
                  reminder_minutes: int | None = None,
                  url: str | None = None, confirmed_attendees: bool = False,
-                 notify: bool = False, ctx: Context = None) -> str:
+                 ctx: Context = None) -> str:
     """修改既有會議。uid 取自 agenda / list_events 輸出的「id:」欄位。
     只更新有給的欄位：title 標題；start/end 時間 'YYYY-MM-DD HH:MM'；
     location 地點；description 描述；add_attendees / remove_attendees
@@ -350,13 +365,15 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
     重複會議三種範圍：預設改整個系列；occurrence='該次原開始時間' 只改那一次
     （拆為獨立會議）；from_occurrence='該次原開始時間' 改那一次及之後所有
     （原系列截止於該時點前、拆出新系列套用變更，可搭配 repeat 換新規則）。
-    兩者都會回覆新 id，後續修改請用新 id（Mail2000 不支援原生單次例外）。
+    兩者都會回覆新 id，後續修改請用新 id。
     repeat 改重複規則（none=取消重複/daily/weekly/monthly，搭配 repeat_until、
     repeat_byday 如 ["TU","TH"]、repeat_interval 每 N 週期一次）。
-    url 會議連結：不給＝不變、給空字串＝移除、給網址＝改寫（沒有就新增）。
+    url 會議連結（描述第一行）：不給＝不變、給空字串＝移除、給網址＝改寫（沒有就新增）。
     add_attendees 會先健檢（格式、伺服器查無帳號），有問題就擋下來讓使用者確認；
     確認無誤要照原樣加入時帶 confirmed_attendees=true。
-    notify=true 以你的名義寄更新通知信（iMIP）給與會者——使用者明確要求才帶。
+    **你召集的會議有與會者時，修改的當下伺服器就會寄更新通知並同步到與會者的行事曆**
+    （新加的人收到邀請）——這是對外動作，改之前先讓使用者確認內容。
+    別人召集的會議只改你自己行事曆上的那份，不通知任何人。
     改時間時若與現有行程重疊會附警告。
     """
     if not any([title, start, end, location, description,
@@ -389,10 +406,10 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
                     + "\n\n確認無誤要照原樣加入的話，重送一次並帶 confirmed_attendees=true。")
         cal = _cal(auth)
         ev = m2kcal.find_event_by_uid(cal, uid)
+        olds = m2kcal.parse_ics(ev.data)
         note = ""
         if start or end:
             try:
-                olds = m2kcal.parse_ics(ev.data)
                 ns = (m2kcal.parse_when(start) if start
                       else m2kcal.parse_when(olds.get("start", "")))
                 ne = (m2kcal.parse_when(end) if end
@@ -401,90 +418,57 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
             except m2kcal.M2KError:
                 note = ""  # 舊值解析不了（如全天事件）就略過重疊檢查
 
+        occ = m2kcal.parse_when(occurrence or from_occurrence) \
+            if (occurrence or from_occurrence) else None
+        cs = _calsrv(ctx, auth[1])
+        orig = cs.get(cs.find_id(uid, [occ, _caldav_start(olds)],
+                                 summary=olds.get("SUMMARY", "")))
+        before = m2knative.attendees(m2knative.edit_form(orig))
+        mine = m2knative.is_mine(orig, auth[1])
+        ne = m2kcal.parse_when(end) if end else None
+        if ne and m2knative.edit_form(orig)["allday"] == "true":
+            ne += dt.timedelta(days=1)      # 同 book：全天事件的 end 是「最後一天」
+        changes = dict(title=title or None,
+                       start=m2kcal.parse_when(start) if start else None,
+                       end=ne,
+                       location=location or None, description=description or None,
+                       url=url, add_attendees=add_attendees,
+                       remove_attendees=remove_attendees)
+        whole = "（系列只剩這一次／之前沒有其他場次，等同修改整筆，id 不變）已更新並驗證："
         if occurrence:
-            # 只改某一次：先建帶變更的獨立事件，成功後再從系列剔除該次
-            occ = m2kcal.parse_when(occurrence)
-            new_uid = str(uuid.uuid4())
-            ics = m2kcal.detach_occurrence_ics(
-                ev.data, occ, new_uid, title=title or None,
-                start=m2kcal.parse_when(start) if start else None,
-                end=m2kcal.parse_when(end) if end else None,
-                location=location or None, desc=description or None, url=url,
-                add_attendees=add_attendees, remove_attendees=remove_attendees)
-            put_status, info = m2kcal.put_and_verify(cal, ics, new_uid, auth=auth)
-            try:
-                ex = m2kcal.add_exdate_ics(ev.data, occ)
-                m2kcal.put_and_verify(cal, ex, uid, auth=auth, put_url=str(ev.url),
-                                      expect_seq=m2kcal.parse_ics(ex).get("SEQUENCE"))
-            except m2kcal.M2KError as err:
-                try:
-                    m2kcal.find_event_by_uid(cal, new_uid).delete()
-                except Exception:
-                    pass
-                return f"錯誤：從系列剔除該次失敗（已還原）：{err}"
-            head = (f"已把 {occurrence} 那一次從系列拆出為獨立會議並套用變更"
-                    f"（新 id: {new_uid}）：")
+            done = m2knative.update_occurrence(cs, orig, occ, **changes)
+            head = whole if done.get("uid") == uid else (
+                f"已把 {occurrence} 那一次從系列拆出為獨立會議並套用變更"
+                f"（新 id: {done.get('uid', '?')}）：")
         elif from_occurrence:
-            # 改此次及以後：先建新系列，成功後才截斷原系列（失敗可還原）
-            occ = m2kcal.parse_when(from_occurrence)
-            new_uid = str(uuid.uuid4())
-            old_ics, new_ics = m2kcal.split_series_ics(
-                ev.data, occ, new_uid, title=title or None,
-                start=m2kcal.parse_when(start) if start else None,
-                end=m2kcal.parse_when(end) if end else None,
-                location=location or None, desc=description or None, url=url,
-                add_attendees=add_attendees, remove_attendees=remove_attendees,
-                rrule=rrule)
-            put_status, info = m2kcal.put_and_verify(cal, new_ics, new_uid, auth=auth)
-            try:
-                m2kcal.put_and_verify(cal, old_ics, uid, auth=auth,
-                                      put_url=str(ev.url),
-                                      expect_seq=m2kcal.parse_ics(old_ics).get("SEQUENCE"))
-            except m2kcal.M2KError as err:
-                try:
-                    m2kcal.find_event_by_uid(cal, new_uid).delete()
-                except Exception:
-                    pass
-                return f"錯誤：截斷原系列失敗（已還原、未拆分）：{err}"
-            ics = new_ics
-            head = (f"已從 {from_occurrence} 起拆為新系列並套用變更"
-                    f"（新 id: {new_uid}，後續修改請用新 id；原系列截止於該時點前）：")
+            done = m2knative.update_following(cs, orig, occ, rrule=rrule, **changes)
+            head = whole if done.get("uid") == uid else (
+                f"已從 {from_occurrence} 起拆為新系列並套用變更"
+                f"（新 id: {done.get('uid', '?')}，後續修改請用新 id；原系列截止於該時點前）：")
         else:
-            ics = m2kcal.update_event_ics(
-                ev.data, title=title or None,
-                start=m2kcal.parse_when(start) if start else None,
-                end=m2kcal.parse_when(end) if end else None,
-                location=location or None, desc=description or None,
-                add_attendees=add_attendees, remove_attendees=remove_attendees,
-                rrule=rrule, reminder=reminder_minutes, url=url)
-            new_seq = m2kcal.parse_ics(ics).get("SEQUENCE")
-            put_status, info = m2kcal.put_and_verify(cal, ics, uid, auth=auth,
-                                                     put_url=str(ev.url),
-                                                     expect_seq=new_seq)
+            done = m2knative.update(cs, orig, rrule=rrule, reminder=reminder_minutes, **changes)
             head = "已更新並驗證："
+        info = m2knative.info(done)
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
     lines = (["⚠ 與會者名單有重複風險："] + vet_notes + [""] if vet_notes else []) + [head,
-             f"  標題: {info.get('SUMMARY', '?')}",
-             f"  時間: {info.get('start', '?')} → {info.get('end', '?')}"]
+             f"  標題: {info['SUMMARY'] or '?'}",
+             f"  時間: {info['start']} → {info['end']}"]
     if repeat:
         lines.append("  重複: " + ("已取消" if rrule == "" else rrule))
     if reminder_minutes is not None:
         lines.append("  提醒: " + ("已移除" if reminder_minutes == 0
                                    else f"開始前 {reminder_minutes} 分鐘"))
-    if put_status not in (200, 201, 204):
-        lines.append(f"  （伺服器 PUT 回 {put_status}，但已驗證異動確實寫入）")
-    if info.get("location"):
+    if info["location"]:
         lines.append(f"  地點: {info['location']}")
-    if info.get("attendees"):
+    if info["attendees"]:
         lines.append("  與會者: " + ", ".join(info["attendees"]))
-    if notify:
-        lines.append(_notify_note(
-            auth, ics, "REQUEST",
-            f"會議更新：{info.get('SUMMARY', '?')}",
-            f"{auth[1]} 更新了會議「{info.get('SUMMARY', '?')}」"
-            f"（{info.get('start', '?')}）。",
-            info.get("attendees") or []))
+    if not mine:
+        lines.append(f"  這場不是你召集的（召集人：{m2knative._addr(orig.get('organizer'))}），"
+                     "只改了你自己行事曆上的這份，不會通知其他人。")
+    elif info["attendees"] or before:
+        lines.append("  已由伺服器通知與會者，並同步到他們的行事曆。")
+    lines += ["  ⚠ " + n for n in cs.notes]
     if note:
         lines.append(note)
     return "\n".join(lines)
@@ -1063,54 +1047,50 @@ def _schedule_view(email, s, e, ctx) -> str:
             + m2kcal.render_schedule({email: res}))
 
 
-def delete_event(uid: str, occurrence: str = "", notify: bool = False,
-                 ctx: Context = None) -> str:
+def delete_event(uid: str, occurrence: str = "", ctx: Context = None) -> str:
     """刪除會議（依 uid，取自查詢輸出的 id: 欄位）。無法復原。
     重複會議：預設刪整個系列；occurrence='該次原開始時間' 時只取消那一次。
-    notify=true 以你的名義寄取消通知信（iMIP CANCEL）給與會者——
-    使用者明確要求才帶。"""
+    **你召集的會議有與會者時，刪除的當下伺服器就會寄取消通知，並從與會者的行事曆移除**——
+    這是對外動作，刪之前先讓使用者確認。別人召集的會議只刪你自己那份，不通知任何人。"""
     try:
         auth = _auth(ctx) or m2kcal.creds()
         cal = _cal(auth)
         ev = m2kcal.find_event_by_uid(cal, uid)
         info = m2kcal.parse_ics(ev.data)
         title = info.get("SUMMARY", uid)
+        occ = m2kcal.parse_when(occurrence) if occurrence else None
+        cs = _calsrv(ctx, auth[1])
+        orig = cs.get(cs.find_id(uid, [occ, _caldav_start(info)], summary=title))
+        has_attendees = bool(m2knative.attendees(m2knative.edit_form(orig)))
+        mine = m2knative.is_mine(orig, auth[1])
         if occurrence:
-            occ = m2kcal.parse_when(occurrence)
-            # 取消通知的內容：該次的獨立表示（同 UID＋RECURRENCE-ID），僅供寄信
-            cancel_src = m2kcal.detach_occurrence_ics(ev.data, occ, uid)
-            cancel_src = cancel_src.replace(
-                f"UID:{uid}",
-                f"UID:{uid}\r\nRECURRENCE-ID;TZID={m2kcal.TZID}:"
-                + m2kcal._local_wall(occ), 1)
-            ex = m2kcal.add_exdate_ics(ev.data, occ)
-            m2kcal.put_and_verify(cal, ex, uid, auth=auth, put_url=str(ev.url),
-                                  expect_seq=m2kcal.parse_ics(ex).get("SEQUENCE"))
+            m2knative.delete_occurrence(cs, orig, occ)
             result = f"已取消「{title}」{occurrence} 那一次（系列其他場次不受影響）。"
         else:
-            cancel_src = ev.data
-            ev.delete()
+            backup = ev.data
+            m2knative.delete(cs, orig)
             try:
                 m2kcal.find_event_by_uid(cal, uid)
                 return f"錯誤：刪除「{title}」後事件仍存在，請稍後重試或到 webmail 確認。"
             except m2kcal.M2KError:
                 result = f"已刪除會議：「{title}」。"
                 # 誤刪救援：Mail2000 沒有垃圾桶，刪除前原文留在對話裡才有得救
-                if len(cancel_src) <= 6000:
+                if len(backup) <= 6000:
                     result += ("\n（誤刪救援）刪除前的事件原文如下，"
-                               "若要復原請把這段 ICS 交給我重建：\n" + cancel_src)
+                               "若要復原請把這段 ICS 交給我重建"
+                               + ("（注意：用 book 重建會重新寄邀請給所有人）"
+                                  if has_attendees and mine else "")
+                               + "：\n" + backup)
                 else:
                     result += ("\n（事件內容過長未附備份；若誤刪可從寄件備份/"
                                "收件匣的邀請信找回）")
     except m2kcal.M2KError as err:
         return f"錯誤：{err}"
-    if notify:
-        result += "\n" + _notify_note(
-            auth, cancel_src, "CANCEL",
-            f"會議取消：{title}",
-            f"{auth[1]} 取消了會議「{title}」"
-            + (f"（{occurrence} 那一次）" if occurrence else "") + "。",
-            info.get("attendees") or [])
+    if not mine:
+        result += (f"\n這場不是你召集的（召集人：{m2knative._addr(orig.get('organizer'))}），"
+                   "只刪了你自己行事曆上的這份，不會通知其他人。")
+    elif has_attendees:
+        result += "\n已由伺服器寄取消通知給與會者，並從他們的行事曆移除。"
     return result
 
 
@@ -1277,7 +1257,8 @@ def _register_prompts(server: "FastMCP") -> None:
                 "2. 用 find_free_slots(attendees=[...]) 找大家共同的空檔；"
                 "若伺服器不支援查他人，就先查我的空檔並提醒我人工確認對方時間\n"
                 "3. 列 2–3 個候選時段給我選\n"
-                "4. 我確認後才用 book(...) 建立；要寄邀請信需我明確同意才帶 notify=true")
+                "4. 我確認時段與名單後才用 book(...) 建立——有與會者時，建立當下伺服器就會寄邀請、"
+                "寫進他們的行事曆")
 
     @server.prompt(name="reschedule", title="會議改期",
                    description="把某個會議改到新時段：定位會議、找空檔、更新")

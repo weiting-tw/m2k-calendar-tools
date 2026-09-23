@@ -48,7 +48,7 @@ m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 提供工具 `list_calendars` / `agenda` / `list_events` / `book` / `update_event`
 （修改既有會議：標題/時間/地點/描述/增減與會者，uid 取自查詢輸出的 `id:` 欄位）；
 設定範例見 README「四、MCP server」。
-建立/修改/刪除只作用於自己的日曆；查詢除自己外，也能看同事「已分享給你」的
+建立/修改/刪除寫在自己的日曆（有與會者時伺服器會同步到與會者的行事曆並寄信）；查詢除自己外，也能看同事「已分享給你」的
 日曆（`agenda`/`list_events` 帶 `person`，走 CalDAV，未分享則讀不到）。
 三種模式：stdio（本機、環境變數憑證，預設）、`--http`（公用部署，每請求帶
 `Authorization: Basic`）、`--oauth`（claude.ai Connectors／手機 app，OAuth 2.1 +
@@ -56,11 +56,16 @@ m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 
 ## 行為須知（避免誤判結果）
 
-- book / update_event 時 Mail2000 的 PUT 常回 500 但**其實已寫入**；工具會自動 GET 驗證，以驗證結果為準。
+- book / update_event 寫入後會自動讀回驗證，以驗證結果為準。
 - 時間輸入格式 `YYYY-MM-DD HH:MM` 或 `YYYY-MM-DD`（台北時間）；ICS 內部用 TZID=Asia/Taipei + VTIMEZONE。
-- CalDAV 無排程：`--attendee` 只寫入事件、**不會自動寄邀請信**；要通知請走 webmail 使用者腳本的原生流程。
+- CLI（`m2kcal.py book`）走 CalDAV：`--attendee` 只寫入自己的事件、**不會寄邀請，對方行事曆也不會出現**。
+- MCP 的 `book` / `update_event` / `delete_event` 走 webmail 原生 API：**有與會者時，一寫入伺服器就會
+  寄邀請／更新／取消通知，並同步到與會者的行事曆**。這是對外動作——時段、名單、內容先讓使用者
+  確認再呼叫。沒有與會者就只動自己的行事曆；別人召集的會議只改／刪自己那份、不通知任何人。
+- 會議連結（`url`）寫在描述第一行「會議連結: …」，不要把同一個網址再塞進 description。
 - 可預期錯誤（帳密錯、時間格式錯、找不到日曆）會回「錯誤：...」訊息，MCP server 不會因此中斷。
-- 重複會議（RRULE）：`update_event` / `delete_event` 會動到**整個系列**（無單次例外支援）。
+- 重複會議（RRULE）：`update_event` / `delete_event` 預設動**整個系列**；`occurrence` 只改／只取消那一次，
+  `update_event` 的 `from_occurrence` 改那一次及以後。拆分後會回新 id，後續修改用新 id。
 - 使用者給模糊人名時，先用 `find_person` 查 email；**多個候選或查無時必須向使用者確認，
   絕不自行猜測 email**。資料源是行事曆歷史，沒開過會的人查不到（公司通訊錄需 webmail session）。
 - book/update 改時間會附「⚠ 與現有行程重疊」警告；剛建立幾秒內的事件可能因伺服器索引延遲漏報。

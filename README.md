@@ -95,7 +95,8 @@ python3 src/m2kcal.py book --title "週會" --start "2026-07-10 14:00" --end "20
     --attendee user_a@example.com --attendee user_b@example.com
 ```
 
-> 注意：CalDAV 無排程功能，`--attendee` 只寫入事件、不會自動寄邀請。要通知請用使用者腳本的原生流程。
+> 注意：CLI 的 `book` 仍走 CalDAV，而 CalDAV 無排程功能，`--attendee` 只寫入自己的事件、不會寄邀請，
+> 對方行事曆也不會出現。要邀請與會者請用 MCP server 的 `book`（走 webmail 原生 API，見下）或使用者腳本。
 
 ## 三、群組展開 CLI（m2kgroup.py）
 
@@ -141,9 +142,17 @@ session，換到的 cookie 只在記憶體快取（預設 10 分鐘）、不落�
 3. `M2K_DIRECTORY_FILE`（選配）＝webmail 匯出的全公司通訊錄（CSV/vCard），
    涵蓋沒往來過的人；依 mtime 自動重載。
 - 異動：`book`（支援 repeat 重複會議與 reminder_minutes 提醒；時段重疊會附警告）、
-  `update_event`（改標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位；重複會議改整串）、
-  `respond_event`（回覆出席狀態 accept/tentative/decline，只更新自己日曆、不通知召集人）、
-  `delete_event`（刪除，重複會議刪整串）
+  `update_event`（改標題/時間/地點/描述/與會者，uid 取自查詢輸出的 `id:` 欄位；重複會議可改
+  整串、只改一次 `occurrence`、或改此次及以後 `from_occurrence`）、
+  `respond_event`（回覆出席狀態 accept/tentative/decline；預設只更新自己日曆，帶 `notify=true`
+  才另以你的名義寄 iMIP 回覆信給召集人）、
+  `delete_event`（刪除，重複會議刪整串或只取消一次）
+- **寫入走 webmail 原生 API**（`src/m2knative.py`，見 `docs/adr/0004`）：`book` / `update_event` /
+  `delete_event` 不走 CalDAV，而是用同一組帳密自動換 webmail session 呼叫原生行事曆 API。
+  **有與會者時，伺服器會把會議寫進每位與會者的行事曆（未回覆）並寄出邀請／更新／取消通知**；
+  沒有與會者就只寫自己；**別人召集的會議**只改／刪你自己行事曆上的那份、不通知任何人。
+  會議連結寫在描述第一行（`會議連結: …`）。
+  讀取（agenda、重疊檢查、刪除後確認）仍走 CalDAV。
 - UI：`show_calendar`（互動行事曆，見下）
 
 **MCP App 行事曆 UI**：支援 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) 的客戶端
@@ -297,6 +306,7 @@ CI 也有同一支掃描，但那是事後偵測——它 fail 時 commit 已經
 
 ## 關鍵限制（務必知道）
 - **登入是 SAML SSO** → 獨立 CLI 無法自動登入通訊錄；群組功能最穩的是使用者腳本（沿用瀏覽器登入）。
-- **CalDAV 無排程** → 與會者不會由 CalDAV 自動通知；通知走原生流程（使用者腳本）或 .ics 邀請信。
+- **CalDAV 無排程** → 經 CalDAV 寫的會議只在自己的行事曆、與會者收不到；所以 MCP 的寫入改走
+  webmail 原生 API（有與會者就由伺服器寫進對方行事曆並寄信）。CLI `book` 仍是 CalDAV。
 - **「按接受」無法省略** → 那是行事曆邀請的正常確認；腳本的價值在確保每個人都「收到」。
 - **CORS** → 純網頁跨站打 mail.gss.com.tw 會被擋；使用者腳本同源運作故無此問題。

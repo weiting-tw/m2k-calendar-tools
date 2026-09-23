@@ -353,7 +353,7 @@ with tempfile.TemporaryDirectory() as td:
     check("通訊錄檔可餵 match_contacts",
           m2kcal.match_contacts(d1, "user")[0][1] in d1)
 
-# 11) 重複會議進階：改規則 / 拆單次 / 剔除單次 / iMIP
+# 11) 重複會議進階：改規則 / iMIP
 rsrc = m2kcal.build_ics("週會", s, e, attendees=["user_a@example.com"],
                         organizer="owner@example.com", uid="R1", stamp="Z",
                         rrule="FREQ=WEEKLY;UNTIL=20260930T155959Z")
@@ -361,28 +361,6 @@ ru = m2kcal.update_event_ics(rsrc, rrule="FREQ=MONTHLY").replace("\r\n ", "")
 check("update 改重複規則", "FREQ=MONTHLY" in ru and "WEEKLY" not in ru)
 check("update 取消重複", "RRULE" not in m2kcal.update_event_ics(rsrc, rrule=""))
 check("update 不動規則", "FREQ=WEEKLY" in m2kcal.update_event_ics(rsrc, title="x"))
-
-occ = dt.datetime(2026, 7, 17, 14, 0)
-det = m2kcal.detach_occurrence_ics(rsrc, occ, "NEW1",
-                                   title="這次改地點", location="別館").replace("\r\n ", "")
-check("拆單次：新 UID 無 RRULE", "UID:NEW1" in det and "RRULE" not in det
-      and "RECURRENCE-ID" not in det)
-check("拆單次：時間＝該次＋原長度", "DTSTART;TZID=Asia/Taipei:20260717T140000" in det
-      and "DTEND;TZID=Asia/Taipei:20260717T150000" in det)
-check("拆單次：變更套用且與會者保留", "SUMMARY:這次改地點" in det
-      and "LOCATION:別館" in det and "user_a@example.com" in det)
-check("拆單次：SEQUENCE 歸零", "SEQUENCE:0" in det)
-try:
-    m2kcal.detach_occurrence_ics(m2kcal.build_ics("普通", s, e, uid="P1", stamp="Z"),
-                                 occ, "N2")
-    _r = False
-except m2kcal.M2KError:
-    _r = True
-check("拆單次：非重複會議丟 M2KError", _r)
-
-exd = m2kcal.add_exdate_ics(rsrc, occ).replace("\r\n ", "")
-check("剔除單次：EXDATE 寫入", "EXDATE;TZID=Asia/Taipei:20260717T140000" in exd)
-check("剔除單次：SEQUENCE+1", "SEQUENCE:1" in exd)
 
 inv = m2kcal.imip_ics(rsrc, "request")
 check("iMIP REQUEST 位置正確", "METHOD:REQUEST" in inv
@@ -497,32 +475,6 @@ check("REPLY 不算待處理邀請",
       m2kcal.parse_invitation_bytes(_mime_invite("REPLY")) is None)
 check("普通信回 None",
       m2kcal.parse_invitation_bytes(MIMEText("hi").as_bytes()) is None)
-
-# 18) split_series_ics：改此次及以後（THISANDFUTURE 模擬）
-ser = m2kcal.build_ics("週會", s, e, uid="SP1", stamp="Z",
-                       rrule="FREQ=WEEKLY;BYDAY=FR")
-old_i, new_i = m2kcal.split_series_ics(ser, dt.datetime(2026, 8, 7, 14, 0),
-                                       "SP2", title="新週會")
-check("拆分：原串 UID 不變且加 UNTIL（split 前一秒 UTC）",
-      "UID:SP1" in unfold(old_i) and "UNTIL=20260807T055959Z" in unfold(old_i))
-check("拆分：新串 UID 與 DTSTART",
-      "UID:SP2" in unfold(new_i)
-      and "DTSTART;TZID=Asia/Taipei:20260807T140000" in unfold(new_i))
-check("拆分：新串沿用規則但無 UNTIL",
-      "BYDAY=FR" in unfold(new_i) and "UNTIL" not in unfold(new_i))
-check("拆分：新串套用變更", "SUMMARY:新週會" in unfold(new_i))
-check("拆分：新串長度沿用（+1h）",
-      "DTEND;TZID=Asia/Taipei:20260807T150000" in unfold(new_i))
-_, new_single = m2kcal.split_series_ics(ser, dt.datetime(2026, 8, 7, 14, 0),
-                                        "SP5", rrule="")
-check("拆分：rrule='' 新串取消重複", "RRULE" not in unfold(new_single))
-try:
-    m2kcal.split_series_ics(m2kcal.build_ics("單次", s, e, uid="SP3", stamp="Z"),
-                            s, "SP4")
-    _r = False
-except m2kcal.M2KError:
-    _r = True
-check("拆分：非重複會議丟 M2KError", _r)
 
 # 19) render_detail 外部內容標記（prompt injection 防護）
 check("render_detail 描述帶不可信標記",
@@ -871,7 +823,7 @@ check("vet 大小寫不影響涵蓋判斷",
 _srv_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "..", "src", "m2k_mcp_server.py"), encoding="utf-8").read()
 check("book 不用 url 當 auth 解構的變數名", "url, user, pwd = auth" not in _srv_src)
-check("book 仍把 url 參數傳進 build_ics", "uid=uid, url=url" in _srv_src)
+check("book 仍把 url 參數傳進原生表單", "description=description, url=url" in _srv_src)
 
 # 25g) parse_schedule 解析失敗的警告要指得出是誰的哪一筆（A7）
 #      只說「有一筆解析失敗」的話，無法判斷影響誰的忙碌時段、也無從追查
@@ -1113,5 +1065,1044 @@ check("共同空檔 扣掉分享日曆的忙碌時段",
           for a, b in _slots))
 check("共同空檔 全天忙碌日無空檔",
       all(a.date() != dt.date(2026, 8, 4) for a, b in _slots))
+
+# 28) m2knative：會議寫入改走 webmail 原生 calsrv API（docs/adr/0004）
+#     CalDAV 建的會議不會進與會者的行事曆；原生 API 帶 send_meeting_mail=true 才會。
+#     欄位形狀比照錄下的真實請求與 webmail 前端 calendar.js 的 toRequestData。
+#     HTTP 一律經過假的 send，不連網。
+import json as _json
+import m2knative
+
+
+def _ep(wall):
+    """'YYYYMMDDTHHMMSS'（台北）→ epoch 秒。"""
+    return int(dt.datetime.strptime(wall, "%Y%m%dT%H%M%S").replace(tzinfo=TW).timestamp())
+
+
+class _FakeCalsrv:
+    """假的 calsrv：記錄每支請求；POST/PUT 依表單存事件、GET 讀回（形狀比照錄下的真實回應，
+    見 tests/fixtures/calsrv_capture.json）。instances 會展開重複規則（扣掉例外日），
+    countRecurrenceInstances 依送來的表單實際計算。
+    script   ：預排的回應（先進先出），用完才走模擬。
+    override ：{method: (回應, 是否照樣處理)}——例如 POST 照樣建立但回 500（結果不明），用一次就失效。
+               instances 與 countRecurrenceInstances 用 "GET instances"／"GET count" 當 key。
+    organizer：之後建立的事件的召集人。"""
+    ROLES = ("CHAIR", "REQ-PARTICIPANT", "OPT-PARTICIPANT", "NON-PARTICIPANT")
+    STAT = ("NEEDS-ACTION", "ACCEPTED", "DECLINED", "TENTATIVE")
+
+    def __init__(self, organizer="me@example.com"):
+        self.calls, self.events, self.script, self.override = [], {}, [], {}
+        self.next_id, self.organizer = 700, organizer
+
+    def __call__(self, method, path, cookie, form=None, params=None):
+        self.calls.append({"method": method, "path": path, "cookie": cookie,
+                           "form": dict(form or {}), "params": dict(params or {})})
+        if self.script:
+            return self.script.pop(0)
+        key = method + (" instances" if path.endswith("instances/") else
+                        " count" if path.endswith("/countRecurrenceInstances") else "")
+        if key in self.override:
+            resp, perform = self.override.pop(key)
+            if perform:
+                self._handle(method, path, dict(form or {}), dict(params or {}))
+            return resp
+        return 200, "application/json; charset=UTF-8", _json.dumps(
+            self._handle(method, path, dict(form or {}), dict(params or {})))
+
+    def seed(self, form, uid, organizer=None):
+        self.next_id += 1
+        self.events[self.next_id] = self._event(form, self.next_id, uid, 0, organizer)
+        return self.next_id
+
+    @staticmethod
+    def occurrences(ev, limit=None):
+        """展開成每次的開始 epoch（扣掉例外日）。count 依 RRULE 語意連例外日一起算。"""
+        rr, t = ev.get("rrule"), dt.datetime.fromtimestamp(ev["dtstart"], TW).replace(tzinfo=None)
+        if not rr:
+            return [ev["dtstart"]]
+        ex = {x["exdate"] for x in ev.get("exdate") or []}
+        out, n, iv = [], 0, max(int(rr.get("interval") or 1), 1)
+        while n < 500:
+            e = int(t.replace(tzinfo=TW).timestamp())
+            if (rr["until"] != -1 and e > rr["until"]) or (rr["count"] and n >= rr["count"]) \
+                    or (limit is not None and e >= limit):
+                break
+            n += 1
+            if e not in ex:
+                out.append(e)
+            if rr["freq"] == "DAILY":
+                t += dt.timedelta(days=iv)
+            elif rr["freq"] == "WEEKLY":
+                t += dt.timedelta(days=7 * iv)
+            else:
+                t = t.replace(year=t.year + (t.month - 1 + iv) // 12, month=(t.month - 1 + iv) % 12 + 1)
+        return out
+
+    def _handle(self, method, path, form, params):
+        if path.endswith("/countRecurrenceInstances"):
+            return {"rspCode": 0, "count": len(self.occurrences(self._event(params, 0, "", 0)))}
+        if path.endswith("/events/instances/"):
+            st, et = int(params["starttime"]), int(params["endtime"])
+            return {"rspCode": 0, "instances": [
+                {"id": i, "calendar_id": "1", "summary": ev["summary"], "dtstart": o,
+                 "dtend": o + ev["dtend"] - ev["dtstart"]}
+                # 和時段重疊的場次（進行中的也算），同真實 instances 端點的語意
+                for i, ev in self.events.items() for o in self.occurrences(ev, et)
+                if o < et and o + ev["dtend"] - ev["dtstart"] > st]}
+        tail = path.rstrip("/").rsplit("/", 1)[-1]
+        if method == "POST":
+            self.next_id += 1
+            ev = self._event(form, self.next_id, f"u{self.next_id}@example.com", 0)
+            self.events[self.next_id] = ev
+            return {"rspCode": 0, "rspMsg": "", "event": ev}
+        eid = int(tail)
+        if eid not in self.events:
+            return {"rspCode": -1, "rspMsg": "not found"}
+        if method == "GET":
+            return {"rspCode": 0, "event": self.events[eid]}
+        if method == "PUT":
+            old = self.events[eid]
+            self.events[eid] = self._event(form, eid, old["uid"], old["sequence"] + 1,
+                                           old["organizer"][7:])
+            return {"rspCode": 0, "event": self.events[eid]}
+        if method == "DELETE":
+            del self.events[eid]
+            return {"rspCode": 0, "rspMsg": "", "events": {"rspResult": {"1": 1, "0": 0}}}
+        raise AssertionError(f"沒模擬到的請求：{method} {path}")
+
+    def _event(self, f, eid, uid, seq, organizer=None):
+        allday = f.get("allday") == "true"
+        n = lambda k: int(f.get(k) or 0)                    # noqa: E731
+        ev = {"id": eid, "ics_id": eid, "uid": uid, "calendar_id": f.get("calendar_id", "1"),
+              "summary": f.get("summary", ""), "description": f.get("description", ""),
+              "location": f.get("location", ""),
+              "organizer": "mailto:" + (organizer or self.organizer),
+              "sequence": seq, "duration": 0, "info": 0, "rrule": None, "exdate": None,
+              "alarm": None, "attendee": [],
+              "timezone": "Asia/Taipei=28800~28800\tAsia/Taipei=28800~28800"}
+        if allday:
+            ds = dt.datetime.strptime(f["dtstart"], "%Y%m%d")
+            de = dt.datetime.strptime(f["dtend"], "%Y%m%d")
+            ev.update(info=2, dstart=f"{ds:%Y/%m/%d}", dend=f"{de:%Y/%m/%d}",
+                      dtstart=int(ds.replace(tzinfo=TW).timestamp()),
+                      dtend=int(de.replace(tzinfo=TW).timestamp()))
+        else:
+            ev.update(dtstart=_ep(f["dtstart"]), dtend=_ep(f["dtend"]))
+        for i in range(1, n("attendee_num") + 1):
+            ev["attendee"].append({
+                "attendee": f[f"attendee{i}"], "attendee_cn": f.get(f"attendee_cn{i}", ""),
+                "attendee_role": self.ROLES.index(f.get(f"attendee_role{i}", "REQ-PARTICIPANT")),
+                "attendee_reply_status": self.STAT.index(
+                    f.get(f"attendee_reply_status{i}", "NEEDS-ACTION")),
+                "attendee_type": 5, "id": 59000 + i})
+        day_ep = lambda v: (_ep(v) if "T" in v else                        # noqa: E731
+                            int(dt.datetime.strptime(v, "%Y%m%d").replace(tzinfo=TW).timestamp()))
+        if f.get("has_rrule") == "true":
+            u = f.get("until", "")
+            ev["rrule"] = {"freq": f["freq"], "wkst": "SU", "interval": n("interval"),
+                           "by_day": f.get("by_day", ""), "by_setpos": f.get("by_setpos", ""),
+                           "by_monthday": f.get("by_monthday", ""), "count": n("count"),
+                           "until": day_ep(u) if u else -1}
+        if n("exdate_num"):
+            ev["exdate"] = [{"exdate": day_ep(f[f"exdate{i}"])} for i in range(1, n("exdate_num") + 1)]
+        if n("alarm_num"):
+            ev["alarm"] = [{"trigger": f[f"alarm_trigger{i}"].replace("PT", "").rstrip("S").lstrip("+"),
+                            "action": f[f"alarm_action{i}"], "repeat": 1, "duration": 0,
+                            "summary": "", "description": "", "attendee": ""}
+                           for i in range(1, n("alarm_num") + 1)]
+        return ev
+
+
+_EV_PATH = "/cgi-bin/cal/calsrv/feeds/default/default/1/events/"
+_t0 = dt.datetime(2026, 10, 6, 14, 0)          # 週二
+_t1 = dt.datetime(2026, 10, 6, 15, 0)
+
+# 28a) new_form：不帶與會者＝只寫自己（send_meeting_mail=false），欄位同錄下的建立請求
+_f = m2knative.new_form("週會", _t0, _t1, location="3F", description="議程")
+check("原生建立：固定欄位（feeds/calendar_id/offset/lang/時區）",
+      _f["feeds"] == "default" and _f["calendar_id"] == "1" and _f["offset"] == "28800"
+      and _f["lang"] == "tw" and _f["orig_feeds"] == "default" and _f["orig_calendar_id"] == "1"
+      and _f["timezone_dtstart"] == "Asia/Taipei@28800" and _f["timezone_dtend"] == "Asia/Taipei@28800")
+check("原生建立：is_new=1、非全天、台北當地時間 YYYYMMDDTHHMMSS",
+      _f["is_new"] == "1" and _f["allday"] == "false"
+      and _f["dtstart"] == "20261006T140000" and _f["dtend"] == "20261006T150000")
+check("原生建立：標題/地點/描述", _f["summary"] == "週會" and _f["location"] == "3F"
+      and _f["description"] == "議程")
+check("原生建立：沒有與會者就不寄信、不帶 attendee 欄位",
+      _f["send_meeting_mail"] == "false" and "attendee_num" not in _f and "orig_id" not in _f)
+check("原生建立：沒要求就不帶重複與提醒", "has_rrule" not in _f and "alarm_num" not in _f)
+
+# 28b) 帶與會者：send_meeting_mail=true，才會寫進對方行事曆並寄信
+_f = m2knative.new_form("週會", _t0, _t1,
+                        attendees=["user_a@example.com", "User_B@example.com", "USER_A@example.com"])
+check("原生建立：有與會者 → send_meeting_mail=true", _f["send_meeting_mail"] == "true")
+check("原生建立：與會者欄位（mailto、cn、REQ-PARTICIPANT），大小寫重複只留一個",
+      _f["attendee_num"] == "2" and _f["attendee1"] == "mailto:user_a@example.com"
+      and _f["attendee_cn1"] == "user_a" and _f["attendee_role1"] == "REQ-PARTICIPANT"
+      and _f["attendee2"] == "mailto:User_B@example.com" and "attendee3" not in _f)
+check("原生建立：新建時不帶回覆狀態（同錄下的請求）", "attendee_reply_status1" not in _f)
+check("原生建立：attendees() 讀得回名單",
+      m2knative.attendees(_f) == ["user_a@example.com", "User_B@example.com"])
+
+# 28c) 全天：dtstart/dtend 為 YYYYMMDD，dtend 排他
+_f = m2knative.new_form("休假", dt.datetime(2026, 10, 6), dt.datetime(2026, 10, 8), all_day=True)
+check("原生建立：全天 allday=true、日期格式、dtend 排他",
+      _f["allday"] == "true" and _f["dtstart"] == "20261006" and _f["dtend"] == "20261008")
+
+# 28d) 重複規則：compose_rrule 的輸出轉成前端的 freq/interval/by_day/… 欄位
+_until = dt.datetime(2026, 12, 31, 23, 59, 59, tzinfo=TW)
+_f = m2knative.new_form("週會", _t0, _t1, rrule=m2kcal.compose_rrule(
+    "weekly", until=_until, byday=["TU", "TH"], interval=2))
+check("原生重複：weekly 帶 has_rrule/freq/interval/by_day",
+      _f["has_rrule"] == "true" and _f["freq"] == "WEEKLY" and _f["interval"] == "2"
+      and _f["by_day"] == "TU,TH")
+check("原生重複：until＝截止那天＋開始時間（前端做法）", _f["until"] == "20261231T140000"
+      and "count" not in _f)
+_f = m2knative.new_form("週會", _t0, _t1, rrule="FREQ=WEEKLY")
+check("原生重複：weekly 沒指定星期 → 開始那天的星期、interval=1",
+      _f["by_day"] == "TU" and _f["interval"] == "1")
+_f = m2knative.new_form("月會", _t0, _t1, rrule=m2kcal.compose_rrule("monthly", byday=["3FR"]))
+check("原生重複：monthly 第 3 個週五 → by_setpos=3、by_day=FR",
+      _f["freq"] == "MONTHLY" and _f["by_setpos"] == "3" and _f["by_day"] == "FR"
+      and "by_monthday" not in _f)
+_f = m2knative.new_form("月會", _t0, _t1, rrule="FREQ=MONTHLY")
+check("原生重複：monthly 不指定 → 每月同一天（by_monthday）", _f["by_monthday"] == "6")
+_f = m2knative.new_form("日會", _t0, _t1, rrule="FREQ=DAILY;COUNT=5")
+check("原生重複：daily 帶 interval、count", _f["freq"] == "DAILY" and _f["interval"] == "1"
+      and _f["count"] == "5" and "until" not in _f)
+_f = m2knative.new_form("全天重複", dt.datetime(2026, 10, 6), dt.datetime(2026, 10, 7),
+                        all_day=True, rrule="FREQ=WEEKLY;UNTIL=20261231T155959Z")
+check("原生重複：全天事件的 until 是 YYYYMMDD", _f["until"] == "20261231")
+try:
+    m2knative.new_form("月會", _t0, _t1, rrule="FREQ=MONTHLY;BYDAY=FR")
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("原生重複：monthly 不帶序數的星期 → M2KError（前端沒有這種規則）", _r)
+
+# 28e) 提醒：alarm_trigger=-PT{秒}S
+_f = m2knative.new_form("週會", _t0, _t1, reminder_minutes=15)
+check("原生提醒：alarm_num/trigger(-PT900S)/action/duration",
+      _f["alarm_num"] == "1" and _f["alarm_trigger1"] == "-PT900S"
+      and _f["alarm_action1"] == "DISPLAY" and _f["alarm_duration1"] == "+PT0S"
+      and _f["alarm_repeat1"] == "1")
+
+# 28f) 會議連結：伺服器不收 url，寫進描述第一行
+_f = m2knative.new_form("週會", _t0, _t1, description="議程", url="https://meet.example.com/x")
+check("原生建立：會議連結寫在描述第一行", _f["description"] == "會議連結: https://meet.example.com/x\n議程")
+check("原生建立：表單沒有 url 欄位", "url" not in _f)
+check("原生建立：只有連結沒有描述", m2knative.new_form(
+    "週會", _t0, _t1, url="https://meet.example.com/x")["description"] == "會議連結: https://meet.example.com/x")
+
+# 28g) Calsrv：建立送 POST 到 events/，帶 cookie；rspCode 非 0 報錯
+_fk = _FakeCalsrv()
+_cs = m2knative.Calsrv("key=K1", send=_fk)
+_ev = m2knative.create(_cs, m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"]))
+check("原生建立：POST 到 feeds/default/default/1/events/ 並帶 cookie",
+      _fk.calls[0]["method"] == "POST" and _fk.calls[0]["path"] == _EV_PATH
+      and _fk.calls[0]["cookie"] == "key=K1")
+check("原生建立：寫入後 GET 讀回驗證", _fk.calls[1]["method"] == "GET"
+      and _fk.calls[1]["path"] == _EV_PATH + str(_ev["id"]))
+check("原生建立：回傳伺服器產生的 uid", _ev["uid"] == f"u{_ev['id']}@example.com")
+_inf = m2knative.info(_ev)
+check("原生 info：標題/時間/與會者/uid（book 回報用）",
+      _inf["SUMMARY"] == "週會" and _inf["start"] == "2026-10-06 14:00"
+      and _inf["end"] == "2026-10-06 15:00" and _inf["attendees"] == ["user_a@example.com"]
+      and _inf["uid"] == _ev["uid"])
+
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", '{"rspCode":-3,"rspMsg":"bad dtstart"}')]
+try:
+    m2knative.Calsrv("key=K1", send=_fk).create({"summary": "x"})
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("原生：rspCode 非 0 → M2KError 帶代碼與訊息", "-3" in _r and "bad dtstart" in _r)
+
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", '{"rspCode":0,"event":{"id":1,"uid":"u1","summary":"別的",'
+               '"dtstart":1790000000,"dtend":1790003600,"info":0}}')]
+_fk.events[1] = {"id": 1, "uid": "u1", "summary": "別的", "dtstart": 1790000000,
+                 "dtend": 1790003600, "info": 0}
+try:
+    m2knative.create(m2knative.Calsrv("key=K1", send=_fk), m2knative.new_form("週會", _t0, _t1))
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("原生建立：讀回的內容與送出不符 → M2KError（不謊報已建立）", "不符" in _r)
+
+# 28h) cookie 過期：rspCode -100 或被導去登入 → 重換一次再送；只重試一次
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", '{"rspCode":-100,"rspMsg":"Invalid Session"}')]
+_refreshed = []
+_cs = m2knative.Calsrv("key=OLD", send=_fk,
+                       refresh=lambda: (_refreshed.append(1), "key=NEW")[1])
+_ev = _cs.create(m2knative.new_form("週會", _t0, _t1))
+check("原生：session 過期 → 重換 cookie 後重送成功",
+      _refreshed == [1] and [c["cookie"] for c in _fk.calls] == ["key=OLD", "key=NEW"]
+      and _ev["summary"] == "週會")
+_fk = _FakeCalsrv()
+_fk.script = [(302, "text/html", ""), ]
+_cs = m2knative.Calsrv("key=OLD", send=_fk, refresh=lambda: "key=NEW")
+_cs.get(_fk.seed(m2knative.new_form("週會", _t0, _t1), "u@example.com"))
+check("原生：被導去登入（302）同樣重換", [c["cookie"] for c in _fk.calls] == ["key=OLD", "key=NEW"]
+      and _cs.cookie == "key=NEW")
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", '{"rspCode":-100}')] * 2
+try:
+    m2knative.Calsrv("key=OLD", send=_fk, refresh=lambda: "key=NEW").create({})
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("原生：重換後仍過期 → 只重試一次就報錯", len(_fk.calls) == 2 and "過期" in _r)
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", '{"rspCode":-100}')]
+try:
+    m2knative.Calsrv("key=OLD", send=_fk).create({})
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("原生：沒有重換手段 → 直接報過期", len(_fk.calls) == 1 and "過期" in _r)
+_fk = _FakeCalsrv()
+_fk.script = [(500, "text/html", "<html>boom</html>")]
+try:
+    m2knative.Calsrv("key=OLD", send=_fk, refresh=lambda: "key=NEW").create({})
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("原生：伺服器 500 不重送（可能已寫入，重送會建兩筆）", len(_fk.calls) == 1 and "500" in _r)
+
+# 28i) _send：真正的 HTTP 層帶對 header（假的 requests，不連網）
+import types as _types
+_sent_req = {}
+def _fake_request(method, url, **kw):
+    _sent_req.update(method=method, url=url, **kw)
+    return _types.SimpleNamespace(status_code=200, headers={"content-type": "application/json"},
+                                  text='{"rspCode":0}')
+_saved_req = sys.modules.get("requests")
+sys.modules["requests"] = _types.SimpleNamespace(request=_fake_request, RequestException=OSError)
+try:
+    m2knative._send("PUT", _EV_PATH + "999", "key=K1", form={"summary": "x"})
+finally:
+    if _saved_req is not None:
+        sys.modules["requests"] = _saved_req
+    else:
+        sys.modules.pop("requests", None)
+_h = {k.lower(): v for k, v in (_sent_req.get("headers") or {}).items()}
+check("原生 _send：method/url/form-urlencoded body",
+      _sent_req.get("method") == "PUT" and _sent_req.get("url") == m2kcal.M2K_BASE + _EV_PATH + "999"
+      and _sent_req.get("data") == {"summary": "x"})
+check("原生 _send：x-requested-with、content-type、Cookie",
+      _h.get("x-requested-with") == "XMLHttpRequest"
+      and _h.get("content-type") == "application/x-www-form-urlencoded; charset=UTF-8"
+      and _h.get("cookie") == "key=K1")
+check("原生 _send：不跟隨轉址（被導去登入要看得出來）", _sent_req.get("allow_redirects") is False)
+
+# 28j) find_id：instances 沒有 uid，只能在時段內逐筆 GET 比對
+_fk = _FakeCalsrv()
+_other = _fk.seed(m2knative.new_form("別的會", _t0, _t1), "other@example.com")
+_mine = _fk.seed(m2knative.new_form("週會", _t0 + dt.timedelta(hours=2), _t1 + dt.timedelta(hours=2)),
+                 "mine@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk)
+check("find_id：比對 uid 找到原生 id", _cs.find_id("mine@example.com", [_t0], summary="週會") == _mine)
+check("find_id：用 CalDAV 起始時間前後一天查 instances（epoch 秒）",
+      _fk.calls[0]["path"] == _EV_PATH + "instances/"
+      and int(_fk.calls[0]["params"]["starttime"]) == int((_t0 - dt.timedelta(days=1)).replace(tzinfo=TW).timestamp())
+      and int(_fk.calls[0]["params"]["endtime"]) == int((_t0 + dt.timedelta(days=1)).replace(tzinfo=TW).timestamp()))
+check("find_id：標題相同的先 GET（少打請求）",
+      [c["path"] for c in _fk.calls if c["method"] == "GET"][1] == _EV_PATH + str(_mine))
+try:
+    _cs.find_id("ghost@example.com", [_t0], summary="週會")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("find_id：找不到 → M2KError 帶 uid", "ghost@example.com" in _r)
+# CalDAV 給的起始時間附近沒有（例如系列第一次被取消了）：往後放寬，只比標題相同的
+_far = _fk.seed(m2knative.new_form("遠的會", _t0 + dt.timedelta(days=30), _t1 + dt.timedelta(days=30)),
+                "far@example.com")
+_fk.seed(m2knative.new_form("不相干", _t0 + dt.timedelta(days=31), _t1 + dt.timedelta(days=31)),
+         "noise@example.com")
+_fk.calls.clear()
+check("find_id：附近找不到 → 放寬時段再找", _cs.find_id("far@example.com", [_t0], summary="遠的會") == _far)
+check("find_id：放寬後只 GET 標題相同的",
+      [c["path"] for c in _fk.calls if c["method"] == "GET" and not c["path"].endswith("instances/")][-1]
+      == _EV_PATH + str(_far)
+      and not any(c["path"] == _EV_PATH + str(_far + 1) for c in _fk.calls))
+
+# 28k) edit_form：GET 回來的事件原樣帶回（回覆狀態、重複、例外、提醒）——漏帶就等於刪掉
+_fk = _FakeCalsrv()
+_base = m2knative.new_form("週會", _t0, _t1, location="3F", description="議程",
+                           url="https://meet.example.com/old",
+                           attendees=["user_a@example.com", "user_b@example.com"],
+                           rrule="FREQ=WEEKLY;UNTIL=20261231T155959Z", reminder_minutes=15)
+_sid = _fk.seed(_base, "series@example.com")
+_fk.events[_sid]["attendee"][0]["attendee_reply_status"] = 1      # user_a 已接受
+_fk.events[_sid]["exdate"] = [{"exdate": _ep("20261013T140000")}]
+_orig = _fk.events[_sid]
+_ef = m2knative.edit_form(_orig)
+check("edit_form：修改用 is_new=0、orig_id", _ef["is_new"] == "0" and _ef["orig_id"] == str(_sid))
+check("edit_form：與會者帶回原回覆狀態",
+      _ef["attendee1"] == "mailto:user_a@example.com" and _ef["attendee_reply_status1"] == "ACCEPTED"
+      and _ef["attendee_reply_status2"] == "NEEDS-ACTION" and _ef["attendee_role1"] == "REQ-PARTICIPANT")
+check("edit_form：重複規則帶回（until 用開始時間）",
+      _ef["has_rrule"] == "true" and _ef["freq"] == "WEEKLY" and _ef["by_day"] == "TU"
+      and _ef["until"] == "20261231T140000")
+check("edit_form：例外日與提醒帶回",
+      _ef["exdate_num"] == "1" and _ef["exdate1"] == "20261013T140000"
+      and _ef["alarm_trigger1"] == "-PT900S" and _ef["alarm_action1"] == "DISPLAY")
+check("edit_form：時間、描述（含連結行）", _ef["dtstart"] == "20261006T140000"
+      and _ef["dtend"] == "20261006T150000"
+      and _ef["description"] == "會議連結: https://meet.example.com/old\n議程")
+check("edit_form：有與會者 → send_meeting_mail=true", _ef["send_meeting_mail"] == "true")
+
+# 28l) update（全部）：PUT events/{id}，只動給的欄位
+_fk.calls.clear()
+_cs = m2knative.Calsrv("key=K1", send=_fk)
+_up = m2knative.update(_cs, _orig, title="新週會", url="https://meet.example.com/new",
+                       add_attendees=["user_c@example.com"], remove_attendees=["USER_B@example.com"])
+_put = _fk.calls[0]
+check("原生修改全部：PUT events/{id}", _put["method"] == "PUT" and _put["path"] == _EV_PATH + str(_sid))
+check("原生修改全部：套用變更、其餘保留",
+      _put["form"]["summary"] == "新週會" and _put["form"]["location"] == "3F"
+      and _put["form"]["has_rrule"] == "true" and _put["form"]["exdate1"] == "20261013T140000")
+check("原生修改全部：連結行被取代而不是多一行",
+      _put["form"]["description"] == "會議連結: https://meet.example.com/new\n議程")
+check("原生修改全部：加減與會者，原本的回覆狀態保留、新加的是未回覆",
+      m2knative.attendees(_put["form"]) == ["user_a@example.com", "user_c@example.com"]
+      and _put["form"]["attendee_reply_status1"] == "ACCEPTED"
+      and _put["form"]["attendee_reply_status2"] == "NEEDS-ACTION")
+check("原生修改全部：有與會者 → send_meeting_mail=true", _put["form"]["send_meeting_mail"] == "true")
+check("原生修改全部：寫入後讀回驗證", _fk.calls[1]["method"] == "GET" and _up["summary"] == "新週會")
+_nf = m2knative.apply(_ef, url="", description="新議程")
+check("apply：url='' 移除連結行、description 換掉本文", _nf["description"] == "新議程")
+check("apply：description 換本文但連結保留",
+      m2knative.apply(_ef, description="新議程")["description"]
+      == "會議連結: https://meet.example.com/old\n新議程")
+check("apply：rrule='' 取消重複（連同例外日）",
+      "has_rrule" not in m2knative.apply(_ef, rrule="") and "exdate_num" not in m2knative.apply(_ef, rrule=""))
+check("apply：reminder=0 移除提醒、N 改寫", "alarm_num" not in m2knative.apply(_ef, reminder=0)
+      and m2knative.apply(_ef, reminder=30)["alarm_trigger1"] == "-PT1800S")
+check("apply：移除所有與會者 → 不寄信",
+      m2knative.apply(_ef, remove_attendees=["user_a@example.com", "user_b@example.com"]
+                      )["send_meeting_mail"] == "false")
+
+# 28m) 只改這次：原系列加 exdate（不寄信）＋ 新建帶 modify_recur=1 與 modified_exdate
+_fk.calls.clear()
+_occ = dt.datetime(2026, 10, 20, 14, 0)
+_one = m2knative.update_occurrence(_cs, _fk.events[_sid], _occ, location="別館")
+_p1, _p2 = [c for c in _fk.calls if c["method"] in ("PUT", "POST")][:2]
+check("只改這次：先 PUT 原系列、加上該次 exdate",
+      _p1["method"] == "PUT" and _p1["path"] == _EV_PATH + str(_sid)
+      and _p1["form"]["exdate_num"] == "2" and _p1["form"]["exdate2"] == "20261020T140000")
+check("只改這次：原系列那支不寄信、帶 modified_exdate",
+      _p1["form"]["send_meeting_mail"] == "false" and _p1["form"]["modified_exdate"] == "20261020")
+check("只改這次：再 POST 新事件（modify_recur=1、modified_exdate、organizer）",
+      _p2["method"] == "POST" and _p2["path"] == _EV_PATH
+      and _p2["form"]["modify_recur"] == "1" and _p2["form"]["modified_exdate"] == "20261020"
+      and _p2["form"]["organizer"] == "mailto:me@example.com")
+check("只改這次：新事件沒有重複與例外日、時間＝該次＋原長度、套用變更",
+      "has_rrule" not in _p2["form"] and "exdate_num" not in _p2["form"]
+      and _p2["form"]["dtstart"] == "20261020T140000" and _p2["form"]["dtend"] == "20261020T150000"
+      and _p2["form"]["location"] == "別館" and _p2["form"]["summary"] == "新週會")
+check("只改這次：新事件有與會者 → 寄信", _p2["form"]["send_meeting_mail"] == "true")
+check("只改這次：回傳新事件（新 uid）", _one["uid"] != "series@example.com" and _one["location"] == "別館")
+# 新建失敗：把原系列還原（拿掉剛加的 exdate），不能讓那一次憑空消失
+_fk.calls.clear()
+_before = dict(_fk.events[_sid])
+_fk.override["POST"] = ((200, "application/json", '{"rspCode":-5,"rspMsg":"fail"}'), False)
+try:
+    m2knative.update_occurrence(_cs, _before, dt.datetime(2026, 10, 27, 14, 0), location="x")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+_puts = [c for c in _fk.calls if c["method"] == "PUT"]
+check("只改這次：新建被拒 → 報錯並說已還原", "還原" in _r)
+check("只改這次：還原＝用原本的表單再 PUT 一次（不含新加的 exdate），send 沿用截斷那支（false）",
+      len(_puts) == 2 and _puts[1]["form"]["exdate_num"] == str(len(_before["exdate"] or []))
+      and _puts[1]["form"]["send_meeting_mail"] == _puts[0]["form"]["send_meeting_mail"] == "false")
+
+# 28n) 此次及以後：截斷原系列（until 或 count）＋ 新建系列帶 modify_recur=2
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"],
+                                   rrule="FREQ=WEEKLY;UNTIL=20261231T155959Z"), "s2@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk)
+_new = m2knative.update_following(_cs, _fk.events[_sid], _occ, title="新週會")
+_puts = [c for c in _fk.calls if c["method"] == "PUT"]
+_posts = [c for c in _fk.calls if c["method"] == "POST"]
+check("此次及以後：原系列 until 截到前一天（時間沿用開始時間）",
+      _puts[0]["path"] == _EV_PATH + str(_sid) and _puts[0]["form"]["until"] == "20261019T140000"
+      and _puts[0]["form"]["modified_exdate"] == "20261020")
+check("此次及以後：新系列 modify_recur=2、從該次開始、沿用規則並套用變更",
+      _posts[0]["form"]["modify_recur"] == "2" and _posts[0]["form"]["modified_exdate"] == "20261020"
+      and _posts[0]["form"]["dtstart"] == "20261020T140000" and _posts[0]["form"]["has_rrule"] == "true"
+      and _posts[0]["form"]["until"] == "20261231T140000" and _posts[0]["form"]["summary"] == "新週會")
+check("此次及以後：回傳新系列", _new["summary"] == "新週會" and _new["uid"] != "s2@example.com")
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, rrule="FREQ=WEEKLY;COUNT=10"), "s3@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk)
+m2knative.update_following(_cs, _fk.events[_sid], _occ, location="別館")
+_cnt = next(c for c in _fk.calls if c["path"].endswith("countRecurrenceInstances"))
+_puts = [c for c in _fk.calls if c["method"] == "PUT"]
+_posts = [c for c in _fk.calls if c["method"] == "POST"]
+check("此次及以後：count 型先問伺服器該次之前有幾次（until 前一天、不含例外日）",
+      _cnt["method"] == "GET" and _cnt["path"] == "/cgi-bin/cal/calsrv/api/default/utilities/countRecurrenceInstances"
+      and _cnt["params"]["until"] == "20261019T140000" and "count" not in _cnt["params"])
+check("此次及以後：count 型原系列 count 改成之前的次數、新系列拿剩下的",
+      _puts[0]["form"]["count"] == "2" and "until" not in _puts[0]["form"]
+      and _posts[0]["form"]["count"] == "8")
+_calls0 = len(_fk.calls)
+m2knative.update_following(_cs, _fk.events[_sid], _t0, location="全改")
+check("此次及以後：從第一次開始＝改全部（直接 PUT，不拆）",
+      [c["method"] for c in _fk.calls[_calls0:] if c["method"] != "GET"] == ["PUT"]
+      and _fk.events[_sid]["location"] == "全改")
+
+# 28o) 刪除：DELETE events/{id}，body 同錄下的請求；有與會者才寄取消信
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"]), "d@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk)
+m2knative.delete(_cs, _fk.events[_sid])
+check("原生刪除：DELETE events/{id}，body 帶 feeds/calendar_id/id/send_meeting_mail",
+      _fk.calls[0]["method"] == "DELETE" and _fk.calls[0]["path"] == _EV_PATH + str(_sid)
+      and _fk.calls[0]["form"] == {"feeds": "default", "calendar_id": "1", "id": str(_sid),
+                                   "send_meeting_mail": "true"}
+      and _sid not in _fk.events)
+_sid = _fk.seed(m2knative.new_form("個人", _t0, _t1), "d2@example.com")
+m2knative.delete(_cs, _fk.events[_sid])
+check("原生刪除：沒有與會者 → send_meeting_mail=false", _fk.calls[-1]["form"]["send_meeting_mail"] == "false")
+# 刪除這一次：PUT 原系列只加 exdate（一般修改）。刻意不照前端帶 delete_recur=1/modified_exdate：
+# 實機觀察，帶了會讓與會者那份整個系列被取消；一般修改時與會者那邊正確只少那一場。
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"],
+                                   rrule="FREQ=WEEKLY"), "d3@example.com")
+_fk.calls.clear()
+m2knative.delete_occurrence(_cs, _fk.events[_sid], _occ)
+_w = [i for i, c in enumerate(_fk.calls) if c["method"] != "GET"]
+_pc = _fk.calls[_w[0]]
+check("刪除這一次：PUT 原系列加 exdate，不帶 delete_recur／modified_exdate",
+      len(_w) == 1 and _pc["method"] == "PUT" and _pc["form"]["exdate1"] == "20261020T140000"
+      and "delete_recur" not in _pc["form"] and "modified_exdate" not in _pc["form"])
+check("刪除這一次：自己召集且有與會者 → send=true", _pc["form"]["send_meeting_mail"] == "true")
+check("刪除這一次：讀回確認例外日已寫入", _fk.calls[_w[0] + 1]["method"] == "GET"
+      and _fk.events[_sid]["exdate"] == [{"exdate": _ep("20261020T140000")}])
+_sid = _fk.seed(m2knative.new_form("別人的週會", _t0, _t1, attendees=["me@example.com", "user_a@example.com"],
+                                   rrule="FREQ=WEEKLY"), "d4@example.com", organizer="boss@example.com")
+_fk.calls.clear()
+m2knative.delete_occurrence(m2knative.Calsrv("key=K1", send=_fk, me="me@example.com"), _fk.events[_sid], _occ)
+_pc = next(c for c in _fk.calls if c["method"] == "PUT")
+check("刪除這一次：非召集人 → send=false、同樣不帶 delete_recur",
+      _pc["form"]["send_meeting_mail"] == "false" and "delete_recur" not in _pc["form"])
+try:
+    m2knative.delete_occurrence(_cs, _fk.events[_fk.seed(m2knative.new_form("單次", _t0, _t1), "x@example.com")], _occ)
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("刪除這一次：不是重複會議 → M2KError", _r)
+
+# 28p) MCP 層：book / update_event / delete_event 改走原生寫入
+if srv:
+    import inspect as _inspect
+    for _fn in (srv.book, srv.update_event, srv.delete_event):
+        check(f"{_fn.__name__} 不再有 notify 參數（有與會者就由伺服器寄信）",
+              "notify" not in _inspect.signature(_fn).parameters)
+    check("respond_event 仍保留 notify（回覆信要使用者明確要求才寄）", "notify" in _inspect.signature(srv.respond_event).parameters)
+
+    _fk = _FakeCalsrv()
+
+    class _NativeBackedCal:
+        """CalDAV 讀取端：內容取自假 calsrv 的事件（同一份資料的兩個入口）。"""
+        url = "https://dav.example.com/cal/"
+        def search(self, **kw): return []
+        def event_by_uid(self, uid):
+            ev = next((v for v in _fk.events.values() if v["uid"] == uid), None)
+            if ev is None:
+                raise m2kcal._not_found_error()("404")
+            s0 = dt.datetime.fromtimestamp(ev["dtstart"], TW).replace(tzinfo=None)
+            e0 = dt.datetime.fromtimestamp(ev["dtend"], TW).replace(tzinfo=None)
+            return SimpleNamespace(url=self.url + uid + ".ics", data=m2kcal.build_ics(
+                ev["summary"], s0, e0, uid=uid, stamp="Z",
+                attendees=[a["attendee"][7:] for a in ev["attendee"]],
+                rrule="FREQ=WEEKLY" if ev["rrule"] else ""))
+
+    _saved3 = (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, srv._vet_note, srv._calsrv,
+               m2knative._send, os.environ.pop("M2K_DISABLE_NOTIFY", None))
+    _srv_src_now = lambda: open(srv.__file__, encoding="utf-8").read()   # noqa: E731
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _NativeBackedCal()
+    m2kcal.creds = lambda: ("u", "me@example.com", "pw")
+    srv._vet_note = lambda auth, attendees: ([], [])
+    srv._calsrv = lambda ctx, me: m2knative.Calsrv("key=T", send=_fk, me=me)
+    def _no_net(*a, **k): raise AssertionError("測試不該打到真的 calsrv")
+    m2knative._send = _no_net
+    try:
+        _b1 = srv.book("週會", "2026-10-06 14:00", attendees=["user_a@example.com"],
+                       url="https://meet.example.com/x")
+        _post = next(c for c in _fk.calls if c["method"] == "POST")
+        check("book：走原生 POST，有與會者 → send_meeting_mail=true",
+              _post["form"]["send_meeting_mail"] == "true"
+              and _post["form"]["attendee1"] == "mailto:user_a@example.com")
+        check("book：會議連結寫進描述第一行", _post["form"]["description"] == "會議連結: https://meet.example.com/x")
+        _new_uid = next(v["uid"] for v in _fk.events.values())
+        check("book：回報已建立、對外 id 是 uid、說明伺服器已寄邀請並寫入對方行事曆",
+              "已建立並驗證" in _b1 and _new_uid in _b1 and "與會者的行事曆" in _b1)
+        _fk.calls.clear()
+        _b2 = srv.book("個人行程", "2026-10-07 09:00")
+        check("book：沒有與會者 → 不寄信、也不提邀請",
+              next(c for c in _fk.calls if c["method"] == "POST")["form"]["send_meeting_mail"] == "false"
+              and "邀請" not in _b2)
+
+        # 寄信開關已移除：寫進對方行事曆只有 send_meeting_mail=true 一條路，關掉等於對方看不到
+        os.environ["M2K_DISABLE_NOTIFY"] = "1"
+        _fk.calls.clear()
+        _b3 = srv.book("週會", "2026-10-08 14:00", attendees=["user_a@example.com"])
+        check("book：M2K_DISABLE_NOTIFY 已不再有作用，有與會者照樣寄邀請",
+              "已建立並驗證" in _b3 and next(c for c in _fk.calls if c["method"] == "POST")
+              ["form"]["send_meeting_mail"] == "true")
+        check("server 不再讀 M2K_DISABLE_NOTIFY", "M2K_DISABLE_NOTIFY" not in _srv_src_now())
+        os.environ.pop("M2K_DISABLE_NOTIFY", None)
+
+        _fk.calls.clear()
+        _u1 = srv.update_event(_new_uid, title="改名後的週會")
+        _put = next(c for c in _fk.calls if c["method"] == "PUT")
+        check("update_event：用 uid 找到原生 id 後 PUT，並通知與會者",
+              _put["form"]["summary"] == "改名後的週會" and _put["form"]["send_meeting_mail"] == "true"
+              and "已更新並驗證" in _u1)
+        # 重複會議只改一次：回覆新事件的 uid
+        _rs = _fk.seed(m2knative.new_form("系列", _t0, _t1, attendees=["user_a@example.com"],
+                                          rrule="FREQ=WEEKLY"), "series-mcp@example.com")
+        _u2 = srv.update_event("series-mcp@example.com", occurrence="2026-10-20 14:00", location="別館")
+        _split_uid = next(v["uid"] for k, v in _fk.events.items() if k > _rs)
+        check("update_event occurrence：回覆新 id＝新事件的 uid",
+              f"新 id: {_split_uid}" in _u2 and "series-mcp@example.com" not in _split_uid)
+        _u4 = srv.update_event("series-mcp@example.com", from_occurrence="2026-10-27 14:00", title="新系列")
+        check("update_event from_occurrence：回覆新系列的 uid", "新 id: " in _u4 and "新系列" in _u4)
+
+        _fk.calls.clear()
+        _d1 = srv.delete_event(_new_uid)
+        check("delete_event：原生 DELETE 並通知與會者、CalDAV 讀回確認已不在",
+              any(c["method"] == "DELETE" and c["form"]["send_meeting_mail"] == "true" for c in _fk.calls)
+              and "已刪除會議" in _d1 and "與會者" in _d1)
+        # 原系列已在 10/27 截斷、10/20 拆出去了，還屬於它的是 10/13
+        _d2 = srv.delete_event("series-mcp@example.com", occurrence="2026-10-13 14:00")
+        check("delete_event occurrence：只取消那一次",
+              "那一次" in _d2 and _fk.events[_rs]["exdate"] is not None)
+    finally:
+        (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, srv._vet_note, srv._calsrv,
+         m2knative._send) = _saved3[:6]
+        os.environ.pop("M2K_DISABLE_NOTIFY", None)
+        if _saved3[6] is not None:
+            os.environ["M2K_DISABLE_NOTIFY"] = _saved3[6]
+
+# 28q) respond_event：要不要寄 iMIP 回覆只看它自己的 notify 參數（預設不寄），不看環境變數
+if srv:
+    _resp_ics = m2kcal.build_ics("邀請", _t0, _t1, uid="R-INV", stamp="Z",
+                                 attendees=["me@example.com"], organizer="boss@example.com")
+    class _RespCal:
+        url = "https://dav.example.com/cal/"
+        def event_by_uid(self, uid): return SimpleNamespace(url=self.url + "r.ics", data=_resp_ics)
+    _mails = []
+    _saved4 = (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, m2kcal.put_and_verify,
+               m2kcal.send_invite, os.environ.pop("M2K_DISABLE_NOTIFY", None))
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _RespCal()
+    m2kcal.creds = lambda: ("u", "me@example.com", "pw")
+    m2kcal.put_and_verify = lambda cal, ics, uid, **k: (204, m2kcal.parse_ics(ics))
+    m2kcal.send_invite = lambda user, pwd, to, subject, body, ics, host=None: (_mails.append(to), len(to))[1]
+    try:
+        _r0 = srv.respond_event("R-INV", "accept")
+        check("respond_event：notify 預設 False → 不寄回覆信", _mails == [] and "接受" in _r0)
+        _r1 = srv.respond_event("R-INV", "accept", notify=True)
+        check("respond_event：notify=True → 寄回覆信給召集人（不需任何環境變數）",
+              _mails == [["boss@example.com"]] and "已寄" in _r1)
+        os.environ["M2K_DISABLE_NOTIFY"] = "1"
+        srv.respond_event("R-INV", "decline", notify=True)
+        check("respond_event：M2K_DISABLE_NOTIFY 已不再有作用", len(_mails) == 2)
+    finally:
+        (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, m2kcal.put_and_verify,
+         m2kcal.send_invite) = _saved4[:5]
+        os.environ.pop("M2K_DISABLE_NOTIFY", None)
+        if _saved4[5] is not None:
+            os.environ["M2K_DISABLE_NOTIFY"] = _saved4[5]
+
+# 28r) 審查修正：每一項對應一組測試
+_fx = _json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "fixtures", "calsrv_capture.json"), encoding="utf-8"))
+
+# 真實請求形狀（去識別化 fixture）：新建表單要有錄下請求的每個欄位、固定欄位值一致
+_f = m2knative.new_form("[測試] 請忽略", dt.datetime(2026, 9, 23, 19), dt.datetime(2026, 9, 23, 19, 30),
+                        attendees=["user_a@example.com"])
+check("fixture：new_form 涵蓋錄下的建立請求的所有欄位", set(_fx["create_request"]) <= set(_f))
+check("fixture：new_form 與錄下的建立請求欄位值相同（send 例外：有與會者就寄）",
+      all(_f[k] == v for k, v in _fx["create_request"].items() if k != "send_meeting_mail"))
+_ef = m2knative.edit_form(_fx["create_response"]["event"], me="me@example.com")
+check("fixture：edit_form(建立回應) 的欄位值＝錄下的修改請求（逐欄相同）",
+      all(_ef.get(k) == v for k, v in _fx["update_request"].items()))
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", _json.dumps(_fx["delete_response"]))]
+m2knative.Calsrv("key=K1", send=_fk).delete(901, True)
+check("fixture：刪除 body＝錄下的刪除請求", _fk.calls[0]["form"] == _fx["delete_request"])
+check("fixture：錄下的刪除回應（events.rspResult）視為成功、不重送", len(_fk.calls) == 1)
+_fk = _FakeCalsrv()
+_fk.script = [(200, "application/json", _json.dumps(_fx["create_response"]))]
+check("fixture：錄下的建立回應解得出 id 與 uid",
+      m2knative.Calsrv("key=K1", send=_fk).create(_fx["create_request"])["uid"] == "u901@example.com")
+
+# HIGH-1 非召集人：只動自己那份、不寄信（前端 send_meeting_mail._default 的規則）
+_fk = _FakeCalsrv()
+_oid = _fk.seed(m2knative.new_form("別人的會", _t0, _t1, attendees=["me@example.com", "user_a@example.com"]),
+                "theirs@example.com", organizer="boss@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+check("非召集人：is_mine 看 organizer", not m2knative.is_mine(_fk.events[_oid], "me@example.com")
+      and m2knative.is_mine(_fk.events[_oid], "BOSS@example.com"))
+check("非召集人：edit_form 有與會者也不寄",
+      m2knative.edit_form(_fk.events[_oid], me="me@example.com")["send_meeting_mail"] == "false")
+m2knative.update(_cs, _fk.events[_oid], location="我這邊改")
+check("非召集人：update 的 PUT send=false", _fk.calls[0]["form"]["send_meeting_mail"] == "false")
+m2knative.delete(_cs, _fk.events[_oid])
+check("非召集人：delete send=false", _fk.calls[-1]["form"]["send_meeting_mail"] == "false")
+_mid = _fk.seed(m2knative.new_form("我的會", _t0, _t1, attendees=["user_a@example.com"]), "mine2@example.com")
+check("召集人本人：照樣寄", m2knative.edit_form(_fk.events[_mid], me="me@example.com")["send_meeting_mail"] == "true")
+check("沒有 organizer 視為自己的", m2knative.is_mine({"organizer": ""}, "me@example.com"))
+
+# HIGH-2 新規則／變更不合法時，原系列一個請求都不能動
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"], rrule="FREQ=WEEKLY"),
+                "h2@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+try:
+    m2knative.update_following(_cs, _fk.events[_sid], _occ, rrule="FREQ=MONTHLY;BYDAY=MO")
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("此次及以後：新規則被拒 → 報錯且沒送出任何寫入",
+      _r and not any(c["method"] in ("PUT", "POST", "DELETE") for c in _fk.calls))
+try:
+    m2knative.update_occurrence(_cs, _fk.events[_sid], _occ, reminder=-5)
+    _r = False
+except m2kcal.M2KError:
+    _r = True
+check("只改這次：變更不合法 → 報錯且沒送出任何寫入",
+      _r and not any(c["method"] in ("PUT", "POST", "DELETE") for c in _fk.calls))
+
+# HIGH-3a 此次及以後：截斷那支有寄信，還原也要寄（否則與會者那邊的場次永久消失）
+_fk.calls.clear()
+_fk.override["POST"] = ((200, "application/json", '{"rspCode":-5,"rspMsg":"fail"}'), False)
+try:
+    m2knative.update_following(_cs, _fk.events[_sid], _occ, title="新")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+_puts = [c for c in _fk.calls if c["method"] == "PUT"]
+check("此次及以後：新建被拒 → 還原，send 沿用截斷那支（true）",
+      "還原" in _r and len(_puts) == 2 and _puts[0]["form"]["send_meeting_mail"] == "true"
+      and _puts[1]["form"]["send_meeting_mail"] == "true" and "until" not in _puts[1]["form"])
+
+# HIGH-3b 建立結果不明（500）：先查新事件在不在，不盲目還原
+_fk.calls.clear()
+_n0 = len(_fk.events)
+_fk.override["POST"] = ((500, "text/html", "<html>boom</html>"), True)       # 其實建了
+_cs.notes.clear()
+_made = m2knative.update_following(_cs, _fk.events[_sid], _occ, title="新2")
+_puts = [c for c in _fk.calls if c["method"] == "PUT"]
+check("結果不明但新事件已建立 → 不還原、回傳新事件、留下說明",
+      len(_puts) == 1 and len(_fk.events) == _n0 + 1 and _made["summary"] == "新2"
+      and any("回應異常" in n for n in _cs.notes))
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"], rrule="FREQ=WEEKLY"),
+                "h3@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+_fk.override["POST"] = ((500, "text/html", "<html>boom</html>"), False)       # 沒建
+try:
+    m2knative.update_occurrence(_cs, _fk.events[_sid], _occ, location="x")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+_puts = [c for c in _fk.calls if c["method"] == "PUT"]
+check("結果不明且查無新事件 → 還原", "還原" in _r and len(_puts) == 2
+      and "exdate_num" not in _puts[1]["form"])
+_fk.calls.clear()
+_fk.override["POST"] = ((500, "text/html", "<html>boom</html>"), False)
+
+
+class _BreakInstancesAfterPost:
+    """POST 之後的 instances 查詢一律失敗，模擬「查也查不出來」。"""
+    def __init__(self, inner): self.inner, self.posted = inner, False
+    def __call__(self, method, path, cookie, form=None, params=None):
+        if method == "POST":
+            self.posted = True
+        if self.posted and path.endswith("instances/"):
+            self.inner.calls.append({"method": method, "path": path, "form": {}, "params": {}})
+            return 502, "text/html", "bad gateway"
+        return self.inner(method, path, cookie, form, params)
+
+
+_cs2 = m2knative.Calsrv("key=K1", send=_BreakInstancesAfterPost(_fk), me="me@example.com")
+try:
+    m2knative.update_occurrence(_cs2, _fk.events[_sid], _occ + dt.timedelta(days=7), location="y")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("結果不明且查不出來 → 停下、不還原、把兩邊狀態講清楚",
+      len([c for c in _fk.calls if c["method"] == "PUT"]) == 1 and "webmail" in _r and "不明" in _r)
+
+# MEDIUM-1 改開始時間時，until 的時間部分跟著新開始時間
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, rrule="FREQ=WEEKLY;UNTIL=20261231T155959Z"), "m1@example.com")
+_nf = m2knative.apply(m2knative.edit_form(_fk.events[_sid]), start=dt.datetime(2026, 10, 6, 9, 30),
+                      end=dt.datetime(2026, 10, 6, 10, 30))
+check("改開始時間：until 改用新開始時間（日期不變）", _nf["until"] == "20261231T093000")
+
+# MEDIUM-2 count 探詢不帶描述與與會者（比照前端 getInstanceCount）
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, description="很長的描述", attendees=["user_a@example.com"],
+                                   rrule="FREQ=WEEKLY;COUNT=10"), "m2@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+m2knative.update_following(_cs, _fk.events[_sid], _occ, location="別館")
+_cnts = [c for c in _fk.calls if c["path"].endswith("countRecurrenceInstances")]
+check("count 探詢：不帶 description 與 attendee 欄位",
+      _cnts and all("description" not in c["params"] and not any(k.startswith("attendee") for k in c["params"])
+                    for c in _cnts))
+
+# MEDIUM-3 指定的那一次必須真的存在
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, rrule="FREQ=WEEKLY"), "m3@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+_wrong = dt.datetime(2026, 10, 21, 14, 0)            # 週三，系列是週二
+for _nm, _call in (("只改這次", lambda: m2knative.update_occurrence(_cs, _fk.events[_sid], _wrong, location="x")),
+                   ("此次及以後", lambda: m2knative.update_following(_cs, _fk.events[_sid], _wrong, location="x")),
+                   ("刪除這一次", lambda: m2knative.delete_occurrence(_cs, _fk.events[_sid], _wrong))):
+    _fk.calls.clear()
+    try:
+        _call()
+        _r = ""
+    except m2kcal.M2KError as err:
+        _r = str(err)
+    check(f"{_nm}：該時間沒有這場 → 報錯且不寫入",
+          "沒有" in _r and not any(c["method"] in ("PUT", "POST", "DELETE") for c in _fk.calls))
+check("occurrence 確認：用 occ 前後 1 分鐘查 instances",
+      int(_fk.calls[0]["params"]["endtime"]) - int(_fk.calls[0]["params"]["starttime"]) == 120)
+
+# MEDIUM-4 全天事件 GET → 修改 來回
+_fk = _FakeCalsrv()
+_aid = _fk.seed(m2knative.new_form("休假", dt.datetime(2026, 10, 6), dt.datetime(2026, 10, 8), all_day=True),
+                "allday@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+_got = m2knative.update(_cs, _fk.events[_aid], title="休假（改）")
+_put = next(c for c in _fk.calls if c["method"] == "PUT")
+check("全天來回：PUT 仍是全天、日期與排他結束日不變",
+      _put["form"]["allday"] == "true" and _put["form"]["dtstart"] == "20261006"
+      and _put["form"]["dtend"] == "20261008" and _got["summary"] == "休假（改）")
+_inf = m2knative.info(_got)
+check("全天來回：info 顯示最後一天", _inf["start"] == "2026-10-06 (全天)" and _inf["end"] == "2026-10-07 (全天)")
+
+# LOW-2 alarm trigger 異常格式：比照前端 parseInt(...)||0
+_ev = dict(_fx["create_response"]["event"], alarm=[
+    {"trigger": "-900S", "action": "DISPLAY"}, {"trigger": "abc", "action": "EMAIL"},
+    {"trigger": None, "action": "EMAIL", "duration": "x", "repeat": None}])
+_ef = m2knative.edit_form(_ev, me="me@example.com")
+check("alarm 異常格式：'-900S'→-PT900S、非數字→+PT0S、duration 壞值→+PT0S",
+      _ef["alarm_trigger1"] == "-PT900S" and _ef["alarm_trigger2"] == "+PT0S"
+      and _ef["alarm_trigger3"] == "+PT0S" and _ef["alarm_duration3"] == "+PT0S"
+      and _ef["alarm_repeat3"] == "1")
+
+# LOW-3 find_id 不吞 session 過期，只吞「查無」
+_fk = _FakeCalsrv()
+_x1 = _fk.seed(m2knative.new_form("週會", _t0, _t1), "x1@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+
+
+class _GoneOnGet:
+    def __init__(self, inner, code): self.inner, self.code = inner, code
+    def __call__(self, method, path, cookie, form=None, params=None):
+        if method == "GET" and path.endswith(f"/{_x1}"):
+            self.inner.calls.append({"method": method, "path": path, "form": {}, "params": {}})
+            return 200, "application/json", _json.dumps({"rspCode": self.code})
+        return self.inner(method, path, cookie, form, params)
+
+
+try:
+    m2knative.Calsrv("key=K1", send=_GoneOnGet(_fk, -100), me="me@example.com").find_id(
+        "x1@example.com", [_t0], summary="週會")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("find_id：單筆 GET 遇到 session 過期 → 往上丟，不當成查無", "過期" in _r)
+try:
+    m2knative.Calsrv("key=K1", send=_GoneOnGet(_fk, -1), me="me@example.com").find_id(
+        "x1@example.com", [_t0], summary="週會")
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("find_id：單筆被拒（查無）→ 跳過繼續找，最後報找不到", "找不到" in _r)
+
+# LOW-1 只剩一次：只改這次＝改整筆；此次及以後判斷「之前有幾次」要扣掉例外日
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("只剩一次", _t0, _t1, attendees=["user_a@example.com"],
+                                   rrule="FREQ=WEEKLY;COUNT=1"), "one@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+_r1 = m2knative.update_occurrence(_cs, _fk.events[_sid], _t0, location="改")
+check("只剩一次：只改這次＝直接改整筆（不拆、不重複）",
+      not any(c["method"] == "POST" for c in _fk.calls) and _r1["uid"] == "one@example.com"
+      and _fk.events[_sid]["rrule"] is None and _fk.events[_sid]["location"] == "改")
+_sid = _fk.seed(m2knative.new_form("只剩一次", _t0, _t1, rrule="FREQ=WEEKLY;COUNT=1"), "one2@example.com")
+_fk.calls.clear()
+m2knative.delete_occurrence(_cs, _fk.events[_sid], _t0)
+check("只剩一次：刪除這一次＝刪整筆", any(c["method"] == "DELETE" for c in _fk.calls) and _sid not in _fk.events)
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, rrule="FREQ=WEEKLY"), "ex@example.com")
+_fk.events[_sid]["exdate"] = [{"exdate": _ep("20261006T140000")}]        # 第一次已取消
+_fk.calls.clear()
+m2knative.update_following(_cs, _fk.events[_sid], dt.datetime(2026, 10, 13, 14, 0), location="全改")
+check("此次及以後：之前的場次都被取消了＝改全部",
+      not any(c["method"] == "POST" for c in _fk.calls) and _fk.events[_sid]["location"] == "全改")
+
+# MCP 層：非召集人講清楚、全天 end 當最後一天、刪除救援的提醒
+if srv:
+    _fk = _FakeCalsrv()
+
+    class _NativeBackedCal2(_NativeBackedCal):
+        pass
+    _NativeBackedCal2.event_by_uid = lambda self, uid: _cal_from(_fk, uid)
+
+    def _cal_from(fk, uid):
+        ev = next((v for v in fk.events.values() if v["uid"] == uid), None)
+        if ev is None:
+            raise m2kcal._not_found_error()("404")
+        s0 = dt.datetime.fromtimestamp(ev["dtstart"], TW).replace(tzinfo=None)
+        e0 = dt.datetime.fromtimestamp(ev["dtend"], TW).replace(tzinfo=None)
+        return SimpleNamespace(url="https://dav.example.com/cal/" + uid + ".ics", data=m2kcal.build_ics(
+            ev["summary"], s0, e0, uid=uid, stamp="Z", all_day=bool(ev["info"] & 2),
+            attendees=[a["attendee"][7:] for a in ev["attendee"]],
+            rrule="FREQ=WEEKLY" if ev["rrule"] else ""))
+
+    _saved5 = (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, srv._vet_note, srv._calsrv, m2knative._send)
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _NativeBackedCal2()
+    m2kcal.creds = lambda: ("u", "me@example.com", "pw")
+    srv._vet_note = lambda auth, attendees: ([], [])
+    srv._calsrv = lambda ctx, me: m2knative.Calsrv("key=T", send=_fk, me=me)
+    m2knative._send = _no_net
+    try:
+        _fk.seed(m2knative.new_form("別人的會", _t0, _t1, attendees=["me@example.com", "user_a@example.com"]),
+                 "their-mcp@example.com", organizer="boss@example.com")
+        _u = srv.update_event("their-mcp@example.com", location="我的筆記")
+        check("update_event 非召集人：明講只改自己那份、不通知別人",
+              "不是你召集的" in _u and "不會通知" in _u and "已由伺服器通知" not in _u)
+        _d = srv.delete_event("their-mcp@example.com")
+        check("delete_event 非召集人：明講只刪自己那份、不通知別人",
+              "不是你召集的" in _d and "不會通知" in _d and "寄取消通知" not in _d)
+        _aid = _fk.seed(m2knative.new_form("休假", dt.datetime(2026, 10, 6), dt.datetime(2026, 10, 8), all_day=True),
+                        "allday-mcp@example.com")
+        _fk.calls.clear()
+        srv.update_event("allday-mcp@example.com", end="2026-10-09")
+        check("update_event 全天：end 當最後一天（+1 天成排他結束日，同 book）",
+              next(c for c in _fk.calls if c["method"] == "PUT")["form"]["dtend"] == "20261010")
+        _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"]), "bye@example.com")
+        _d2 = srv.delete_event("bye@example.com")
+        check("delete_event 救援文字：提醒用 book 重建會重新寄邀請給所有人", "重新寄邀請" in _d2)
+        _sid = _fk.seed(m2knative.new_form("只剩一次", _t0, _t1, rrule="FREQ=WEEKLY;COUNT=1"), "last@example.com")
+        _u2 = srv.update_event("last@example.com", occurrence="2026-10-06 14:00", location="改")
+        check("update_event occurrence 只剩一次：說明等同修改整筆、id 不變",
+              "整筆" in _u2 and "新 id" not in _u2)
+    finally:
+        (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, srv._vet_note, srv._calsrv,
+         m2knative._send) = _saved5
+
+# 28s) 複審修正
+# 1) 場次數必須是明確的整數：缺值／非整數丟 Unclear，不當成 0；只剩「剛好 1 次」才改走全部
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, attendees=["user_a@example.com"], rrule="FREQ=WEEKLY"),
+                "cnt@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+for _bad in ('{"rspCode":0}', '{"rspCode":0,"count":"abc"}'):
+    for _nm, _call in (("刪除這一次", lambda: m2knative.delete_occurrence(_cs, _fk.events[_sid], _occ)),
+                       ("只改這次", lambda: m2knative.update_occurrence(_cs, _fk.events[_sid], _occ, location="x")),
+                       ("此次及以後", lambda: m2knative.update_following(_cs, _fk.events[_sid], _occ, location="x"))):
+        _fk.calls.clear()
+        _fk.override["GET count"] = ((200, "application/json", _bad), False)
+        try:
+            _call()
+            _r = None
+        except m2kcal.M2KError as err:
+            _r = err
+        check(f"{_nm}：場次數 {_bad} → Unclear、不送任何寫入",
+              isinstance(_r, m2knative.Unclear)
+              and not any(c["method"] in ("PUT", "POST", "DELETE") for c in _fk.calls))
+_fk.override.pop("GET count", None)
+_fk.calls.clear()
+_fk.override["GET count"] = ((200, "application/json", '{"rspCode":0,"count":0}'), False)
+m2knative.update_occurrence(_cs, _fk.events[_sid], _occ, location="拆")
+check("只改這次：場次數 0 不改走全部（照樣拆出新事件）", any(c["method"] == "POST" for c in _fk.calls))
+_fk.calls.clear()
+_fk.override["GET count"] = ((200, "application/json", '{"rspCode":0,"count":0}'), False)
+m2knative.delete_occurrence(_cs, _fk.events[_sid], _occ + dt.timedelta(days=7))
+check("刪除這一次：場次數 0 不改走全部（照樣只加例外日）",
+      not any(c["method"] == "DELETE" for c in _fk.calls) and _sid in _fk.events)
+
+# 2) 結果不明的錯誤要提醒：伺服器可能已處理，先確認、不要直接重試
+_HINT = "伺服器可能已處理，請先到 webmail 或用 agenda 確認，不要直接重試"
+_fk = _FakeCalsrv()
+_fk.override["POST"] = ((500, "text/html", "<html>boom</html>"), False)
+try:
+    m2knative.Calsrv("key=K1", send=_fk).create({"summary": "x"})
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("Unclear（HTTP 500）訊息帶「可能已處理、先確認、不要直接重試」", _HINT in _r)
+_saved_req = sys.modules.get("requests")
+def _boom(*a, **k): raise OSError("read timed out")
+sys.modules["requests"] = _types.SimpleNamespace(request=_boom, RequestException=OSError)
+try:
+    try:
+        m2knative._send("POST", _EV_PATH, "key=K1", form={})
+        _r = ""
+    except m2kcal.M2KError as err:
+        _r = str(err)
+finally:
+    if _saved_req is not None:
+        sys.modules["requests"] = _saved_req
+    else:
+        sys.modules.pop("requests", None)
+check("Unclear（逾時）訊息同樣帶提醒", _HINT in _r)
+if srv:
+    _fk = _FakeCalsrv()
+    _saved6 = (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, srv._vet_note, srv._calsrv, m2knative._send)
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _NativeBackedCal()
+    m2kcal.creds = lambda: ("u", "me@example.com", "pw")
+    srv._vet_note = lambda auth, attendees: ([], [])
+    srv._calsrv = lambda ctx, me: m2knative.Calsrv("key=T", send=_fk, me=me)
+    m2knative._send = _no_net
+    try:
+        _fk.override["POST"] = ((500, "text/html", "<html>boom</html>"), False)
+        _b = srv.book("週會", "2026-10-08 14:00", attendees=["user_a@example.com"])
+        check("book 碰到 500：回覆含「可能已處理、先確認、不要直接重試」", _b.startswith("錯誤") and _HINT in _b)
+    finally:
+        (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, srv._vet_note, srv._calsrv,
+         m2knative._send) = _saved6
+
+# 3) is_mine：只看 organizer；me 沒網域時只比帳號
+check("is_mine：me 無網域、organizer 有網域 → 自己的",
+      m2knative.is_mine({"organizer": "mailto:Me@example.com"}, "me"))
+check("is_mine：me 無網域時不會被前綴騙（meme ≠ me）",
+      not m2knative.is_mine({"organizer": "mailto:meme@example.com"}, "me"))
+# 實機觀察：send_meeting_mail=true 寫進與會者行事曆的那份，organizer＝召集人、creator＝與會者本人。
+# 所以 creator 不能當判準，否則與會者改自己那份會以自己身分寄信給所有人。
+check("is_mine：organizer 是別人、creator 是自己（伺服器寫進與會者行事曆的複本）→ 不是自己的",
+      not m2knative.is_mine({"organizer": "mailto:boss@example.com", "creator": "me@example.com"}, "me@example.com"))
+check("is_mine：organizer、creator 都是別人 → 不是自己的",
+      not m2knative.is_mine({"organizer": "mailto:boss@example.com", "creator": "boss@example.com"}, "me"))
+
+# 4) occurrence 要剛好是某一場的開始時間，不是「落在某一場期間內」
+_fk = _FakeCalsrv()
+_sid = _fk.seed(m2knative.new_form("週會", _t0, _t1, rrule="FREQ=WEEKLY"), "exact@example.com")
+_cs = m2knative.Calsrv("key=K1", send=_fk, me="me@example.com")
+_fk.calls.clear()
+try:
+    m2knative.delete_occurrence(_cs, _fk.events[_sid], _occ + dt.timedelta(minutes=30))   # 14:30，會議進行中
+    _r = ""
+except m2kcal.M2KError as err:
+    _r = str(err)
+check("occurrence 不是某場的開始時間（落在會議中間）→ 報錯且不寫入",
+      "沒有" in _r and not any(c["method"] in ("PUT", "POST", "DELETE") for c in _fk.calls))
+m2knative.delete_occurrence(_cs, _fk.events[_sid], _occ)
+check("occurrence 剛好是開始時間 → 照常處理", _fk.events[_sid]["exdate"] is not None)
 
 print("\n全部通過 ✅")

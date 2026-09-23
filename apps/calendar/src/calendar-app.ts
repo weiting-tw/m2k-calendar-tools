@@ -704,14 +704,10 @@ function openDetail(ev: Ev) {
     card.appendChild(d);
   }
   const acts = el("div", "acts");
-  // 編輯類動作（刪除/編輯/寄通知信）只在本人日曆的事件顯示；別人的事件唯讀
+  // 編輯類動作（刪除/編輯）只在本人日曆的事件顯示；別人的事件唯讀
   if (editable) {
-    // 寄通知信選項（刪除/取消時用；寄信是對外動作，預設不勾）
-    const nrow = el("label", "rsvp");
-    const nchk = el("input") as HTMLInputElement;
-    nchk.type = "checkbox";
-    nrow.append(nchk, el("span", "", "刪除時寄取消通知信給與會者"));
-    if (ev.attendees.length) card.appendChild(nrow);
+    // 有與會者時伺服器會寄取消通知並從對方行事曆移除，刪之前講清楚
+    if (ev.attendees.length) card.appendChild(el("div", "note", "刪除時會通知與會者，並從他們的行事曆移除。"));
 
     const mkDel = (label: string, confirm: string, occurrence: string) => {
       const b = el("button", "btn danger", label) as HTMLButtonElement;
@@ -722,7 +718,7 @@ function openDetail(ev: Ev) {
           return;
         }
         b.disabled = true; b.textContent = "刪除中…";
-        const args: Record<string, unknown> = { uid: ev.uid, notify: nchk.checked };
+        const args: Record<string, unknown> = { uid: ev.uid };
         if (occurrence) args.occurrence = occurrence;
         const res = await app.callServerTool({ name: "delete_event", arguments: args })
           .catch((e) => ({ content: [{ type: "text", text: "錯誤：" + e }] }));
@@ -817,13 +813,7 @@ function openForm(ev: Ev | null, presetStart?: Date) {
     }
     card.append(f("提醒", reminder));
   }
-  // 寄通知信（iMIP）：對外動作，預設不勾
-  const nrow = el("label", "rsvp");
-  const nchk = el("input") as HTMLInputElement;
-  nchk.type = "checkbox";
-  nrow.append(nchk, el("span", "", ev ? "寄更新通知信給與會者" : "寄會議邀請信給與會者"));
-  card.appendChild(nrow);
-  const note = el("div", "note", "通知信以你的名義寄出（標準會議邀請格式）；不勾則只寫入行事曆。");
+  const note = el("div", "note", "有與會者時，儲存後伺服器會以你的名義寄出邀請／更新通知，並寫入與會者的行事曆。");
   card.appendChild(note);
   const acts = el("div", "acts");
   const save = el("button", "btn primary", ev ? "儲存變更" : "建立") as HTMLButtonElement;
@@ -842,7 +832,6 @@ function openForm(ev: Ev | null, presetStart?: Date) {
           location: loc.value.trim(), description: desc.value, attendees: emails,
           repeat: repeat.value, repeat_until: repeat.value ? until.value : "",
           reminder_minutes: parseInt(reminder.value || "0", 10),
-          notify: nchk.checked,
         }});
       } else {
         const old = new Set(ev.attendees.map((a) => a.email.toLowerCase()));
@@ -863,7 +852,6 @@ function openForm(ev: Ev | null, presetStart?: Date) {
           if (rchanged() && until.value) args.repeat_until = until.value;
         }
         if (Object.keys(args).length === 1) { toast("沒有任何變更"); ov.remove(); return; }
-        args.notify = nchk.checked;
         res = await app.callServerTool({ name: "update_event", arguments: args });
       }
       const txt = firstText(res);
