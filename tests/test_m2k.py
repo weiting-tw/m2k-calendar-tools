@@ -928,6 +928,23 @@ check("時長不足的時段不列入",
 check("呼叫端可依缺的人數自行篩選",
       all(len(x[2]) <= 1 for x in _rk if len(x[2]) <= 1))
 
+# 25i) update_event 只改會議連結也要能過守門檢查
+#      「沒有任何要修改的欄位」那份清單漏了 url，只改連結的呼叫會被直接擋下
+if srv:
+    _orig_creds = m2kcal.creds
+    def _no_network():
+        raise m2kcal.M2KError("測試用：不連線")
+    m2kcal.creds = _no_network          # 過了守門就會去取憑證，在這裡攔住，不打網路
+    try:
+        for _u in ("https://meet.example.com/x", ""):     # 改寫與移除都算變更
+            _r = srv.update_event("uid-x", url=_u)
+            check(f"update_event 只給 url={_u!r} 不會被判定為沒有變更",
+                  "沒有任何要修改的欄位" not in _r)
+        check("update_event 什麼都沒給仍要擋下",
+              "沒有任何要修改的欄位" in srv.update_event("uid-x"))
+    finally:
+        m2kcal.creds = _orig_creds
+
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
                              dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")

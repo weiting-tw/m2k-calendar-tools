@@ -255,7 +255,7 @@ def book(title: str, start: str, end: str = "", location: str = "",
     title 標題；start/end 時間 'YYYY-MM-DD HH:MM'（end 省略則 +1 小時，台北時間）；
     location 地點；description 描述；url 視訊會議連結（寫進 iCalendar 的 URL 屬性，
     多數客戶端會渲染成「加入會議」，不要把長網址塞進 description）；
-    attendees 與會者 email 清單（建立前會健檢：格式錯誤、沒往來過的位址會擋下來，
+    attendees 與會者 email 清單（建立前會健檢：格式錯誤、伺服器查無帳號的位址會擋下來，
     把名單列給使用者確認後再帶 confirmed_attendees=true 重送）；
     repeat 重複頻率 daily/weekly/monthly（省略＝不重複）；repeat_until 重複截止 'YYYY-MM-DD'；
     repeat_byday 指定星期（weekly 用，如 ["TU","TH"]＝每週二四；monthly 可帶序數如 ["3FR"]＝
@@ -357,7 +357,7 @@ def update_event(uid: str, title: str = "", start: str = "", end: str = "",
     """
     if not any([title, start, end, location, description,
                 add_attendees, remove_attendees, repeat,
-                reminder_minutes is not None]):
+                reminder_minutes is not None, url is not None]):
         return "錯誤：沒有任何要修改的欄位。"
     if occurrence and from_occurrence:
         return "錯誤：occurrence（只改某一次）與 from_occurrence（改此次及以後）只能擇一。"
