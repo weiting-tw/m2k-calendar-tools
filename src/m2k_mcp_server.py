@@ -172,17 +172,19 @@ def list_calendars(ctx: Context = None) -> str:
 def agenda(days: int = 7, person: str = "", calendar: str = "",
            ctx: Context = None) -> str:
     """看未來 N 天的行程（依天分組）。days 預設 7。
-    person：查同事分享給你的行事曆——模糊名字（如 'bear'）或完整 email 皆可，
-    留空＝查自己。對方需先在 webmail 把行事曆分享給你；多候選或未分享會回
-    提示訊息，不會亂猜。
+    person：查同事的行事曆——模糊名字或完整 email 皆可，留空＝查自己。
+    對方有分享就讀完整內容；沒分享就改用排程資料（只有時間、標題與出席狀態）。
+    多候選會回提示訊息，不會亂猜。
     calendar 指定自己的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
         auth = _auth(ctx) or m2kcal.creds()
-        cal, prefix, err = _person_or_self(auth, person, calendar)
+        cal, prefix, err, unshared = _person_or_self(auth, person, calendar)
         if err:
             return err
         start = dt.datetime.now()
         end = start + dt.timedelta(days=days)
+        if unshared:
+            return _schedule_view(unshared, start, end, ctx)
         events = m2kcal.search_events(cal, start=start, end=end, event=True, expand=True)
         # 帶今天日期＋星期當時間錨點：模型換算「下週三」這類相對時間才不會偏移
         return (f"{prefix}（今天 {start:%Y-%m-%d} 週{m2kcal._WK[start.weekday()]}）"
@@ -195,16 +197,18 @@ def agenda(days: int = 7, person: str = "", calendar: str = "",
 def list_events(start: str, end: str, person: str = "", calendar: str = "",
                 ctx: Context = None) -> str:
     """查指定期間的行程。start/end 格式 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'。
-    person：查同事分享給你的行事曆（模糊名字或完整 email），留空＝查自己；
-    對方需先在 webmail 把行事曆分享給你，多候選或未分享會回提示訊息。
+    person：查同事的行事曆（模糊名字或完整 email），留空＝查自己；
+    對方沒分享時改用排程資料（只有時間、標題與出席狀態），多候選會回提示訊息。
     calendar 指定自己的行事曆名稱（省略＝主行事曆，名稱見 list_calendars）。"""
     try:
         s = m2kcal.parse_when(start)
         e = m2kcal.parse_when(end)
         auth = _auth(ctx) or m2kcal.creds()
-        cal, prefix, err = _person_or_self(auth, person, calendar)
+        cal, prefix, err, unshared = _person_or_self(auth, person, calendar)
         if err:
             return err
+        if unshared:
+            return _schedule_view(unshared, s, e, ctx)
         events = cal.search(start=s, end=e, event=True, expand=True)
         return f"{prefix}{start} ~ {end}，共 {len(events)} 筆:\n" + m2kcal.render_grouped(events)
     except m2kcal.M2KError as e:
@@ -560,8 +564,13 @@ def _tag_owner(rows: list[dict], owner: str) -> list[dict]:
 def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
                       person: str = "") -> dict[str, Any]:
     """組行事曆 UI 資料。person 給一個或多個（逗號分隔）同事名字/email，
-    會把「你自己 + 每位有分享的同事」的行程合併，每筆帶 owner 欄位供 UI
-    依人分色/篩選；解析失敗（多候選、未分享）收進 notes 於 UI 提示。"""
+    會把「你自己 + 每位同事」的行程合併，每筆帶 owner 欄位供 UI 依人分色/篩選；
+    解析失敗（多候選、查無帳號）收進 notes 於 UI 提示。
+
+    他人行事曆不論是對方分享的、還是排程端點查到的，對使用者是同一個概念
+    （CONTEXT.md）。所以先讀分享的（資料較完整：有地點、描述、與會者），沒分享
+    就改走排程端點（自動換 webmail session，任何人都查得到，但只有時間、標題與
+    出席狀態）；兩條都不通才說查不到。"""
     auth = _auth(ctx) or m2kcal.creds()
     me = auth[1]
     owners = [{"email": me, "label": me.split("@")[0]}]
@@ -579,12 +588,24 @@ def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
         try:
             evs = m2kcal.person_calendar(m2kcal.connect(auth), email).search(
                 start=s, end=e, event=True, expand=True)
+            rows = m2kcal.events_json(evs)
         except m2kcal._not_found_error():
-            notes.append(f"{email}：未分享行事曆給你，無法顯示")
-            continue
+            rows = None
+        if rows is None:
+            cookie = _cookie(ctx).strip()
+            if not cookie:
+                notes.append(f"{email}：未分享行事曆給你，也拿不到 webmail session，無法顯示")
+                continue
+            got, _dropped = _others_schedule(cookie, [email], s, e, ctx)
+            res = got.get(email.lower())
+            if isinstance(res, Exception) or res is None:
+                notes.append(f"{email}：{res or '查詢失敗'}")
+                continue
+            rows = m2kcal.schedule_events_json(res, email)
+            notes.append(f"{email}：未分享行事曆，改以排程資料顯示（只有時間、標題與出席狀態）")
         seen.add(email.lower())
         owners.append({"email": email, "label": email.split("@")[0]})
-        events += _tag_owner(m2kcal.events_json(evs), email)
+        events += _tag_owner(rows, email)
     return {
         "range": {"start": s.strftime("%Y-%m-%d"), "end": e.strftime("%Y-%m-%d")},
         "today": dt.date.today().isoformat(),
@@ -599,8 +620,9 @@ def show_calendar(start: str = "", days: int = 7, person: str = "",
                   ctx: Context = None) -> dict[str, Any]:
     """以互動行事曆 UI 顯示行程（週/月檢視，可直接在 UI 建立與修改會議）。
     start 'YYYY-MM-DD'（預設今天）起 days 天。
-    person：同時把同事分享給你的行事曆疊在畫面上（一個或多個，逗號分隔；
-    模糊名字如 'bear' 或完整 email），UI 會依人分色並可勾選篩選、加人。
+    person：同時把同事的行事曆疊在畫面上（一個或多個，逗號分隔；模糊名字或
+    完整 email）。有分享就顯示完整內容，沒分享就改用排程資料（只有時間、標題與
+    出席狀態）；UI 會依人分色並可勾選篩選、加人。
     使用者要「看行事曆／排程總覽」時優先用這個；純文字摘要用 agenda / list_events。"""
     try:
         s = (m2kcal.parse_when(start) if start
@@ -615,7 +637,8 @@ def show_calendar(start: str = "", days: int = 7, person: str = "",
 def calendar_data(start: str, end: str, person: str = "",
                   ctx: Context = None) -> dict[str, Any]:
     """（行事曆 UI 專用）回指定期間的結構化行程資料。start/end 'YYYY-MM-DD'。
-    person：一個或多個（逗號分隔）同事名字/email，疊加顯示其分享的行事曆。"""
+    person：一個或多個（逗號分隔）同事名字/email，疊加顯示其行事曆
+    （沒分享的改用排程資料）。"""
     try:
         return _calendar_payload(m2kcal.parse_when(start), m2kcal.parse_when(end),
                                  ctx, person)
@@ -1006,25 +1029,38 @@ def _resolve_person(auth, name):
 
 
 def _person_or_self(auth, person, calendar=""):
-    """回 (Calendar, 標題前綴, 錯誤字串)。person 空＝查自己（calendar 可選
-    自己的哪一本）；否則解析成同事 email 並指向其分享日曆。解析失敗／多候選／
-    未分享時 err 有值（可直接回使用者），cal 為 None。"""
+    """回 (Calendar, 標題前綴, 錯誤字串, 未分享的 email)。person 空＝查自己
+    （calendar 可選自己的哪一本）；否則解析成同事 email 並指向其分享日曆。
+    解析失敗／多候選時 err 有值；對方沒分享時第四個值是該 email——呼叫端改走
+    排程端點（他人行事曆不論分享與否是同一個概念，見 CONTEXT.md）。"""
     person = (person or "").strip()
     if not person:
-        return _cal(auth, calendar), "", None
+        return _cal(auth, calendar), "", None, ""
     email, err = _resolve_person(auth, person)
     if err:
-        return None, "", err
+        return None, "", err, ""
     cal = m2kcal.person_calendar(m2kcal.connect(auth), email)
     try:  # 未分享／帳號不存在→404
         cal.search(start=dt.datetime.now(),
                    end=dt.datetime.now() + dt.timedelta(days=1),
                    event=True, expand=True)
     except m2kcal._not_found_error():
-        return None, "", (f"找到 {email}，但讀不到對方行事曆"
-                          "（可能未分享給你，或帳號不存在）。"
-                          f"不必分享也能看的做法：用 others_agenda(emails=[\"{email}\"])，需 webmail Cookie。")
-    return cal, f"【{email}】", None
+        return None, "", None, email
+    return cal, f"【{email}】", None, ""
+
+
+def _schedule_view(email, s, e, ctx) -> str:
+    """對方沒分享時，改用排程端點列出他的行程（自動換 webmail session）。"""
+    cookie = _cookie(ctx).strip()
+    if not cookie:
+        return (f"找到 {email}，但對方未分享行事曆，也拿不到 webmail session"
+                "（請確認帳密設定），無法查看。")
+    got, _dropped = _others_schedule(cookie, [email], s, e, ctx)
+    res = got.get(email.lower())
+    if isinstance(res, Exception) or res is None:
+        return f"錯誤：{email}：{res or '查詢失敗'}"
+    return (f"【{email}】（未分享行事曆，改以排程資料顯示：只有時間、標題與出席狀態）\n"
+            + m2kcal.render_schedule({email: res}))
 
 
 def delete_event(uid: str, occurrence: str = "", notify: bool = False,

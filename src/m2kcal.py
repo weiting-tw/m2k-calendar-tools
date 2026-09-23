@@ -1482,6 +1482,38 @@ def fetch_schedule(cookie, email, s, e):
     return parse_schedule(data, email)
 
 
+_STATUS_PARTSTAT = {"已接受": "ACCEPTED", "暫定": "TENTATIVE",
+                    "已拒絕": "DECLINED", "未回覆": "NEEDS-ACTION"}
+
+
+def schedule_events_json(events, who):
+    """排程端點的事件（parse_schedule 的輸出）→ 行事曆 UI 吃的形狀（同 events_json）。
+
+    對方沒分享行事曆時，UI 改用排程端點顯示——他人行事曆不論怎麼取得都是同一個
+    概念（見 CONTEXT.md）。排程端點給的資料較少：沒有 uid、地點、描述、與會者名單，
+    所以這些欄位留空；該人自己的出席狀態放進 attendees，暫定／已拒絕才看得出來。
+    UI 對他人的事件本來就唯讀，合成的 uid 只拿來當畫面上的 key。"""
+    out = []
+    for i, ev in enumerate(events or []):
+        s0, e0 = ev["start"], ev["end"]
+        allday = (s0.hour == s0.minute == 0 and e0.hour == e0.minute == 0 and e0 > s0)
+        fmt = "%Y-%m-%d" if allday else "%Y-%m-%d %H:%M"
+        partstat = _STATUS_PARTSTAT.get(ev.get("status", ""))
+        out.append({
+            "uid": f"sched:{who}:{s0:%Y%m%dT%H%M}:{i}",
+            "summary": ev.get("summary") or "(無標題)",
+            "start": s0.strftime(fmt),
+            "end": e0.strftime(fmt),
+            "allday": allday,
+            "location": "", "description": "",
+            "organizer": ev.get("organizer") or "",
+            "rrule": "",
+            "attendees": ([{"name": who, "email": who, "partstat": partstat}]
+                          if partstat else []),
+        })
+    return out
+
+
 def busy_periods(events):
     """排程事件 → 可餵給 free_slots 的 (start, end) 清單。"""
     return [(ev["start"], ev["end"]) for ev in events if ev["busy"]]

@@ -945,6 +945,115 @@ if srv:
     finally:
         m2kcal.creds = _orig_creds
 
+# 25j) schedule_events_json：排程端點的事件轉成行事曆 UI 吃的形狀
+#      他人行事曆不論是分享的還是排程查到的，對使用者是同一個概念（CONTEXT.md），
+#      UI 不該因為對方沒分享就整個顯示不出來
+_sched_evs = [
+    {"start": dt.datetime(2026, 9, 21, 10, 0), "end": dt.datetime(2026, 9, 21, 11, 0),
+     "summary": "週會", "organizer": "boss@example.com", "status": "暫定", "busy": True},
+    {"start": dt.datetime(2026, 9, 22, 0, 0), "end": dt.datetime(2026, 9, 24, 0, 0),
+     "summary": "休假", "organizer": "", "status": "自建", "busy": True},
+    {"start": dt.datetime(2026, 9, 23, 14, 0), "end": dt.datetime(2026, 9, 23, 15, 0),
+     "summary": "不去的會", "organizer": "x@example.com", "status": "已拒絕", "busy": False},
+]
+_rows = m2kcal.schedule_events_json(_sched_evs, "peer@example.com")
+check("排程事件轉 UI：筆數不變", len(_rows) == 3)
+_k = set(_rows[0])
+check("排程事件轉 UI：欄位與 events_json 一致",
+      {"uid", "summary", "start", "end", "allday", "location", "description",
+       "organizer", "rrule", "attendees"} <= _k)
+check("排程事件轉 UI：uid 各不相同（UI 以它當 key）",
+      len({r["uid"] for r in _rows}) == 3)
+check("排程事件轉 UI：時間格式同 events_json", _rows[0]["start"] == "2026-09-21 10:00")
+check("排程事件轉 UI：整天的區間視為全天", _rows[1]["allday"] is True
+      and _rows[1]["start"] == "2026-09-22")
+check("排程事件轉 UI：出席狀態帶到該人身上（暫定要看得出來）",
+      _rows[0]["attendees"] == [{"name": "peer@example.com", "email": "peer@example.com",
+                                 "partstat": "TENTATIVE"}])
+check("排程事件轉 UI：自建的事件不附出席狀態", _rows[1]["attendees"] == [])
+check("排程事件轉 UI：已拒絕照實標示", _rows[2]["attendees"][0]["partstat"] == "DECLINED")
+
+# 25k) 行事曆 UI：對方沒分享時要改用排程端點，而不是回「無法顯示」
+if srv:
+    class _EmptyCal:
+        def search(self, **kw): return []
+    _NF = m2kcal._not_found_error()
+    def _not_shared(principal, email): raise _NF("404")
+    _saved = (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, m2kcal.person_calendar,
+              m2kcal.fetch_schedule, os.environ.pop("M2K_COOKIE", None))
+    m2kcal.connect = lambda auth: object()
+    m2kcal.pick_calendar = lambda p, name=None: _EmptyCal()
+    m2kcal.creds = lambda: ("u", "me@example.com", "pw")
+    m2kcal.person_calendar = _not_shared
+    try:
+        # 有 cookie：沒分享的人改走排程端點，事件照樣顯示
+        os.environ["M2K_COOKIE"] = "ck=1"
+        m2kcal.fetch_schedule = lambda ck, em, s0, e0: [
+            {"start": dt.datetime(2026, 9, 21, 10), "end": dt.datetime(2026, 9, 21, 11),
+             "summary": "對方的會", "organizer": "", "status": "已接受", "busy": True}]
+        _pl = srv._calendar_payload(dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 28),
+                                    None, "peer@example.com")
+        check("UI：沒分享的人改走排程端點後列入 owners",
+              [o["email"] for o in _pl["owners"]] == ["me@example.com", "peer@example.com"])
+        check("UI：排程端點的事件有顯示並標上 owner",
+              any(ev["summary"] == "對方的會" and ev["owner"] == "peer@example.com"
+                  for ev in _pl["events"]))
+        check("UI：不再回「無法顯示」", not any("無法顯示" in n for n in _pl["notes"]))
+        check("UI：說明資料來自排程（細節較少）", any("排程" in n for n in _pl["notes"]))
+
+        # 查無帳號：照實說，不要說成「未分享」
+        def _ghost(ck, em, s0, e0): raise m2kcal.M2KError("查無此帳號：" + em)
+        m2kcal.fetch_schedule = _ghost
+        _pl2 = srv._calendar_payload(dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 28),
+                                     None, "ghost@example.com")
+        check("UI：查無帳號照實說明", any("查無此帳號" in n for n in _pl2["notes"]))
+
+        # 沒 cookie：才回原本的「未分享」
+        os.environ.pop("M2K_COOKIE", None)
+        _cookie_orig = srv._cookie
+        srv._cookie = lambda ctx, force=False: ""
+        try:
+            _pl3 = srv._calendar_payload(dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 28),
+                                         None, "peer@example.com")
+        finally:
+            srv._cookie = _cookie_orig
+        check("UI：拿不到 cookie 時才說未分享", any("未分享" in n for n in _pl3["notes"]))
+    finally:
+        (m2kcal.connect, m2kcal.pick_calendar, m2kcal.creds, m2kcal.person_calendar,
+         m2kcal.fetch_schedule) = _saved[:5]
+        os.environ.pop("M2K_COOKIE", None)
+        if _saved[5] is not None:
+            os.environ["M2K_COOKIE"] = _saved[5]
+
+# 25l) agenda / list_events 帶 person：對方沒分享時同樣改走排程端點
+if srv:
+    class _PingCal:
+        def search(self, **kw): raise m2kcal._not_found_error()("404")
+    _saved2 = (m2kcal.connect, m2kcal.creds, m2kcal.person_calendar,
+               m2kcal.fetch_schedule, os.environ.pop("M2K_COOKIE", None))
+    m2kcal.connect = lambda auth: object()
+    m2kcal.creds = lambda: ("u", "me@example.com", "pw")
+    m2kcal.person_calendar = lambda principal, email: _PingCal()
+    try:
+        os.environ["M2K_COOKIE"] = "ck=1"
+        _now = dt.datetime.now().replace(minute=0, second=0, microsecond=0)
+        m2kcal.fetch_schedule = lambda ck, em, s0, e0: [
+            {"start": _now + dt.timedelta(hours=1), "end": _now + dt.timedelta(hours=2),
+             "summary": "對方的週會", "organizer": "", "status": "暫定", "busy": True}]
+        _ag = srv.agenda(days=3, person="peer@example.com")
+        check("agenda：沒分享的人改走排程端點，行程照樣列出", "對方的週會" in _ag)
+        check("agenda：說明資料來自排程", "排程" in _ag and "讀不到" not in _ag)
+        _le = srv.list_events(f"{_now:%Y-%m-%d}", f"{_now + dt.timedelta(days=2):%Y-%m-%d}",
+                              person="peer@example.com")
+        check("list_events：沒分享的人同樣改走排程端點", "對方的週會" in _le)
+        check("list_events：不再叫使用者自己去貼 Cookie", "需 webmail Cookie" not in _le)
+    finally:
+        (m2kcal.connect, m2kcal.creds, m2kcal.person_calendar,
+         m2kcal.fetch_schedule) = _saved2[:4]
+        os.environ.pop("M2K_COOKIE", None)
+        if _saved2[4] is not None:
+            os.environ["M2K_COOKIE"] = _saved2[4]
+
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
                              dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")
