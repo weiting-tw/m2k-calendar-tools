@@ -19,6 +19,8 @@ interface Ev {
   location: string; description: string; organizer: string; rrule: string;
   attendees: Attendee[];
   owner?: string;  // 該筆所屬 owner 的 email（多人疊加時用；未定義＝自己日曆）
+  description_truncated?: boolean;  // 伺服器為了控制回應大小截斷了描述（完整內容見 get_event）
+  attendees_total?: number;         // 別人的事件只帶前幾位與會者時的總人數
 }
 interface Owner { email: string; label: string }
 interface CalData {
@@ -168,20 +170,25 @@ async function maybePrefetch(): Promise<void> {
 }
 
 // 有些 host 不回傳 structuredContent，退回解析 content 內的 JSON 文字
+// （要用完整文字：firstText 只取前 200 字給錯誤訊息用，拿它 parse 一定失敗）
 function extractCalData(res: unknown): (CalData & { error?: string }) | undefined {
   const sc = (res as { structuredContent?: unknown }).structuredContent as
     (CalData & { error?: string }) | undefined;
   if (sc && (sc.events || sc.error)) return sc;
   try {
-    const parsed = JSON.parse(firstText(res) || "null");
+    const parsed = JSON.parse(fullText(res) || "null");
     if (parsed && (parsed.events || parsed.error)) return parsed;
   } catch { /* 非 JSON 文字 */ }
   return undefined;
 }
 
-function firstText(res: unknown): string {
+function fullText(res: unknown): string {
   const c = (res as { content?: Array<{ type: string; text?: string }> })?.content;
-  return c?.find((x) => x.type === "text")?.text?.slice(0, 200) ?? "";
+  return c?.find((x) => x.type === "text")?.text ?? "";
+}
+
+function firstText(res: unknown): string {
+  return fullText(res).slice(0, 200);
 }
 
 // ---------- 依人分色 ----------
@@ -646,10 +653,13 @@ function openDetail(ev: Ev) {
   card.appendChild(meta);
   if (ev.attendees.length) {
     const box = el("div", "atts");
-    box.append(el("div", "atts-h", `與會者 ${ev.attendees.length} 人`));
+    const total = ev.attendees_total ?? ev.attendees.length;
+    box.append(el("div", "atts-h", `與會者 ${total} 人`));
     const sym: Record<string, string> = { ACCEPTED: "✓", DECLINED: "✗", TENTATIVE: "?" };
     for (const a of ev.attendees)
       box.append(el("div", "att", `${sym[a.partstat] ?? "·"} ${a.name} <${a.email}>`));
+    if (total > ev.attendees.length)
+      box.append(el("div", "att", `…另 ${total - ev.attendees.length} 人（完整名單請用 get_event 查）`));
     card.appendChild(box);
   }
   // 我的出席回覆（只更新自己日曆的狀態，不會通知召集人）
@@ -700,7 +710,8 @@ function openDetail(ev: Ev) {
     card.appendChild(row);
   }
   if (ev.description) {
-    const d = el("div", "desc"); d.textContent = ev.description;
+    const d = el("div", "desc");
+    d.textContent = ev.description + (ev.description_truncated ? "…（描述過長已截斷，完整內容請用 get_event 查）" : "");
     card.appendChild(d);
   }
   const acts = el("div", "acts");
@@ -767,6 +778,11 @@ function openForm(ev: Ev | null, presetStart?: Date) {
   const loc = inp("text", ev?.location ?? "");
   const desc = el("textarea") as HTMLTextAreaElement;
   desc.value = ev?.description ?? "";
+  // 描述被截斷時不給改：否則存檔會把截斷後的文字寫回去，後半段就沒了
+  if (ev?.description_truncated) {
+    desc.readOnly = true;
+    desc.title = "描述過長，這裡只有前段；要改描述請讓 Claude 用 update_event 處理";
+  }
   const atts = el("textarea") as HTMLTextAreaElement;
   atts.placeholder = "email，逗號或換行分隔";
   atts.value = ev ? ev.attendees.map((a) => a.email).join(", ") : "";
@@ -942,9 +958,15 @@ app.ontoolinput = (params) => {
 };
 
 app.ontoolresult = (result) => {
-  const sc = result.structuredContent as (CalData & { error?: string }) | undefined;
+  // 有些 host 不給 structuredContent（或回應太大被丟掉），同一份 JSON 在 content 的文字裡
+  const sc = extractCalData(result);
   if (sc?.error) { loading = false; render(); toast("讀取失敗：" + sc.error, true); }
-  else if (sc?.events) { data = sc; normalizePersonArg(); loading = false; render(); }
+  else if (sc?.events) {
+    // 結果裡的 owners 決定之後要疊加誰——host 沒送 tool-input 時 personArg 只能從這裡來
+    data = sc; normalizePersonArg(); loading = false;
+    // 工具給的範圍（例如今天起 7 天）不一定蓋得住週檢視（週日起），蓋不住就用同一批人補抓
+    if (covered()) render(); else fetchData(true);
+  }
   else fetchData(true);  // 可能是模型做了異動（book/update…），強制重抓
 };
 

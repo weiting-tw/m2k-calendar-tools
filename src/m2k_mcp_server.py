@@ -545,6 +545,31 @@ def _tag_owner(rows: list[dict], owner: str) -> list[dict]:
     return rows
 
 
+# 行事曆 UI 的回應會整包經過 host（結構化＋同一份 JSON 文字，量是兩倍），太大時 host 可能
+# 截斷或丟掉結構化那份，UI 就只剩自己的行程。精簡 UI 用不到或唯讀的部分：
+# - 自己的事件：與會者名單不能砍（編輯表單拿它算增減，少了等於移除那些人）；
+#   描述截斷時標 description_truncated，UI 據此不讓人把截斷後的文字寫回去。
+# - 別人的事件：UI 唯讀，名單只留前幾位並附 attendees_total，描述截更短。
+_UI_DESC_MAX = 2000
+_UI_OTHERS_DESC_MAX = 300
+_UI_OTHERS_ATT_MAX = 20
+
+
+def _slim_for_ui(events: list[dict], me: str) -> list[dict]:
+    me = (me or "").lower()
+    for ev in events:
+        mine = (ev.get("owner") or me).lower() == me
+        cap = _UI_DESC_MAX if mine else _UI_OTHERS_DESC_MAX
+        if len(ev.get("description") or "") > cap:
+            ev["description"] = ev["description"][:cap]
+            ev["description_truncated"] = True
+        atts = ev.get("attendees") or []
+        if not mine and len(atts) > _UI_OTHERS_ATT_MAX:
+            ev["attendees"] = atts[:_UI_OTHERS_ATT_MAX]
+            ev["attendees_total"] = len(atts)
+    return events
+
+
 def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
                       person: str = "") -> dict[str, Any]:
     """組行事曆 UI 資料。person 給一個或多個（逗號分隔）同事名字/email，
@@ -586,7 +611,7 @@ def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
                 notes.append(f"{email}：{res or '查詢失敗'}")
                 continue
             rows = m2kcal.schedule_events_json(res, email)
-            notes.append(f"{email}：未分享行事曆，改以排程資料顯示（只有時間、標題與出席狀態）")
+            # 改走排程是正常路徑、不是錯誤，不在 UI 上提示（使用者要求）；notes 只留真正的錯誤
         seen.add(email.lower())
         owners.append({"email": email, "label": email.split("@")[0]})
         events += _tag_owner(rows, email)
@@ -595,7 +620,7 @@ def _calendar_payload(s: "dt.datetime", e: "dt.datetime", ctx,
         "today": dt.date.today().isoformat(),
         "me": me,  # UI 據此顯示「我的出席狀態」快速回覆按鈕，並判斷可否編輯
         "owners": owners,  # 納入顯示的人（me 一定在第一個），UI 依此分色/做篩選
-        "events": events,  # 每筆帶 owner 欄位（= owners 裡的 email）
+        "events": _slim_for_ui(events, me),  # 每筆帶 owner 欄位（= owners 裡的 email）
         "notes": notes,    # 解析失敗提示（多候選/未分享），UI 顯示
     }
 
@@ -1043,7 +1068,7 @@ def _schedule_view(email, s, e, ctx) -> str:
     res = got.get(email.lower())
     if isinstance(res, Exception) or res is None:
         return f"錯誤：{email}：{res or '查詢失敗'}"
-    return (f"【{email}】（未分享行事曆，改以排程資料顯示：只有時間、標題與出席狀態）\n"
+    return (f"【{email}】（排程資料：只有時間、標題）\n"
             + m2kcal.render_schedule({email: res}))
 
 

@@ -951,7 +951,8 @@ if srv:
               any(ev["summary"] == "對方的會" and ev["owner"] == "peer@example.com"
                   for ev in _pl["events"]))
         check("UI：不再回「無法顯示」", not any("無法顯示" in n for n in _pl["notes"]))
-        check("UI：說明資料來自排程（細節較少）", any("排程" in n for n in _pl["notes"]))
+        # 使用者要求：這不是錯誤，UI 不再顯示「未分享，改以排程資料顯示」的提示
+        check("UI：未分享改走排程不再出現在 notes", not any("排程" in n or "未分享" in n for n in _pl["notes"]))
 
         # 查無帳號：照實說，不要說成「未分享」
         def _ghost(ck, em, s0, e0): raise m2kcal.M2KError("查無此帳號：" + em)
@@ -994,11 +995,14 @@ if srv:
              "summary": "對方的週會", "organizer": "", "status": "暫定", "busy": True}]
         _ag = srv.agenda(days=3, person="peer@example.com")
         check("agenda：沒分享的人改走排程端點，行程照樣列出", "對方的週會" in _ag)
-        check("agenda：說明資料來自排程", "排程" in _ag and "讀不到" not in _ag)
+        check("agenda：給模型一行簡短說明資料來自排程", "（排程資料：只有時間、標題）" in _ag and "讀不到" not in _ag)
+        check("agenda：不再是整句長提示", "未分享行事曆，改以排程資料顯示" not in _ag)
         _le = srv.list_events(f"{_now:%Y-%m-%d}", f"{_now + dt.timedelta(days=2):%Y-%m-%d}",
                               person="peer@example.com")
         check("list_events：沒分享的人同樣改走排程端點", "對方的週會" in _le)
         check("list_events：不再叫使用者自己去貼 Cookie", "需 webmail Cookie" not in _le)
+        check("list_events：同樣只有一行簡短說明", "（排程資料：只有時間、標題）" in _le
+              and "未分享行事曆，改以排程資料顯示" not in _le)
     finally:
         (m2kcal.connect, m2kcal.creds, m2kcal.person_calendar,
          m2kcal.fetch_schedule) = _saved2[:4]
@@ -2104,5 +2108,28 @@ check("occurrence 不是某場的開始時間（落在會議中間）→ 報錯�
       "沒有" in _r and not any(c["method"] in ("PUT", "POST", "DELETE") for c in _fk.calls))
 m2knative.delete_occurrence(_cs, _fk.events[_sid], _occ)
 check("occurrence 剛好是開始時間 → 照常處理", _fk.events[_sid]["exdate"] is not None)
+
+# 29) 行事曆 UI 的資料量：host 可能截斷大回應，UI 用不到或唯讀的部分要精簡
+#     編輯表單拿完整與會者名單算增減、拿描述比對有沒有改——自己的事件不能砍名單，
+#     描述截斷了就要標記，讓 UI 不把截斷後的文字寫回去；別人的事件唯讀，可以砍。
+if srv:
+    _many = [{"name": f"人{i}", "email": f"p{i}@example.com", "partstat": "NEEDS-ACTION"} for i in range(300)]
+    _mk = lambda owner, desc: {"uid": owner + desc[:3], "summary": "會", "start": "2026-10-06 10:00",   # noqa: E731
+                               "end": "2026-10-06 11:00", "allday": False, "location": "", "description": desc,
+                               "organizer": owner, "rrule": "", "attendees": list(_many), "owner": owner}
+    _rows_in = [_mk("me@example.com", "長" * 5000), _mk("peer@example.com", "長" * 5000),
+                _mk("me@example.com", "短描述")]
+    _slim = srv._slim_for_ui([dict(r) for r in _rows_in], "me@example.com")
+    check("UI 精簡：自己的事件與會者名單完整（編輯表單靠它算增減）", len(_slim[0]["attendees"]) == 300)
+    check("UI 精簡：自己的長描述截斷並標記（UI 不會把截斷的文字寫回去）",
+          len(_slim[0]["description"]) <= srv._UI_DESC_MAX and _slim[0]["description_truncated"] is True)
+    check("UI 精簡：短描述原樣、不標記", _slim[2]["description"] == "短描述" and "description_truncated" not in _slim[2])
+    check("UI 精簡：別人的事件（唯讀）與會者只留前幾位並附總數",
+          len(_slim[1]["attendees"]) == srv._UI_OTHERS_ATT_MAX and _slim[1]["attendees_total"] == 300)
+    check("UI 精簡：別人的事件描述截得更短", len(_slim[1]["description"]) <= srv._UI_OTHERS_DESC_MAX
+          and _slim[1]["description_truncated"] is True)
+    check("UI 精簡：整包明顯變小", len(_json.dumps(_slim, ensure_ascii=False))
+          < len(_json.dumps(_rows_in, ensure_ascii=False)) * 0.7)
+    check("UI 精簡：_calendar_payload 有套用", "_slim_for_ui(" in _srv_src_now())
 
 print("\n全部通過 ✅")
