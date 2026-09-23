@@ -1819,6 +1819,7 @@ def send_invite(user, pwd, to, subject, body, ics_text, host=None):
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
+    from email.utils import formatdate
     to = [t.strip() for t in to if t.strip()]
     if not to:
         return 0
@@ -1828,6 +1829,7 @@ def send_invite(user, pwd, to, subject, body, ics_text, host=None):
     msg["From"] = user
     msg["To"] = ", ".join(to)
     msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)   # RFC 5322 必備；缺了容易被當垃圾信
     msg.attach(MIMEText(body, "plain", "utf-8"))
     msg.attach(MIMEText(ics_text, f"calendar; method={method}", "utf-8"))
     s = smtplib.SMTP_SSL(host or os.environ.get("M2K_SMTP_HOST", DEFAULT_IMAP_HOST),
@@ -1838,8 +1840,8 @@ def send_invite(user, pwd, to, subject, body, ics_text, host=None):
     finally:
         try:
             s.quit()
-        except Exception as _e:
-            note("寄送通知信失敗，與會者不會收到邀請信", _e)
+        except Exception:
+            pass   # 信已經寄出才會走到這；真正寄失敗是 sendmail 丟例外，呼叫端會回報
     return len(to)
 
 

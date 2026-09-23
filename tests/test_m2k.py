@@ -1054,6 +1054,29 @@ if srv:
         if _saved2[4] is not None:
             os.environ["M2K_COOKIE"] = _saved2[4]
 
+# 25m) send_invite：寄出的信要有 Date 標頭（RFC 5322 必備，缺了易被當垃圾信）；
+#      quit() 在信寄出後才呼叫，它失敗不代表沒寄到，不該留「與會者不會收到」的警告
+import smtplib as _smtplib
+_sent = {}
+class _FakeSMTP:
+    def __init__(self, *a, **k): pass
+    def login(self, u, p): pass
+    def sendmail(self, frm, to, raw): _sent["raw"] = raw
+    def quit(self): raise OSError("連線已被對方關閉")
+_orig_ssl = _smtplib.SMTP_SSL
+_smtplib.SMTP_SSL = _FakeSMTP
+try:
+    m2kcal.clear_notes()
+    _n = m2kcal.send_invite("me@example.com", "pw", ["a@example.com"], "會議邀請：測試",
+                            "內文", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n")
+    _notes = m2kcal.take_notes()
+finally:
+    _smtplib.SMTP_SSL = _orig_ssl
+_hdr = _sent.get("raw", "").split("\n\n", 1)[0]
+check("send_invite 回收件人數", _n == 1)
+check("send_invite 信件帶 Date 標頭", "\nDate: " in "\n" + _hdr)
+check("send_invite quit 失敗不留「沒寄到」的警告", not any("不會收到" in x for x in _notes))
+
 # 26) busy_from_shared：從已分享日曆算忙碌區間（全天＝整天忙）、未分享列 missing
 _sh_timed = m2kcal.build_ics("會A", dt.datetime(2026, 8, 3, 10, 0),
                              dt.datetime(2026, 8, 3, 11, 0), uid="S1", stamp="Z")
