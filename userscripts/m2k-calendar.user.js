@@ -19,7 +19,8 @@
    【看板】勾自己/他人/公用行事曆，或用姓名/部門/email 加人（不必對方分享），合併成每天一欄的看板。
  資料來源：
    - 他人行事曆走排程端點 /cgi-bin/cal/calsrv/schedule/{email}/instances，對全公司開放、只讀。
-   - 已分享/公用行事曆走 feeds 端點。兩者的 dtstart/dtend 都直接是 epoch 秒，不必再加 offset。
+   - 已分享/公用行事曆走 feeds 端點。兩者的 dtstart/dtend 都直接是 epoch 秒，不必再加 offset；
+     全天事件則只有 dstart/dend 日期（見 toEvent）。
  註：搜「部門」才會展開群組；直接打群組信箱(如 xxx@example.com)只是一個收件者、不會展開。
 */
 (function () {
@@ -327,14 +328,30 @@
   }
   // dtstart/dtend 直接是 epoch 秒。offset 欄位不要加：加了會把 19:00 的事件推到隔天 03:00，
   // 而且它有時是字串 "28800"，JS 一加就變字串串接。
+  // 全天事件沒有 dtstart/dtend，改給 dstart/dend 日期（實測 "2026/10/01"；dend 是排他日）。
+  // YYYYMMDD 與 epoch 秒也一併接，與 src/m2kcal.py 的 date_field 同一套規則。
+  function dayOf(v) {
+    const s = String(v).trim();
+    if (/^-?\d{9,}$/.test(s)) { const d = new Date(Number(s) * 1000); d.setHours(0, 0, 0, 0); return d; }
+    const m = s.match(/^(\d{4})\D?(\d{1,2})\D?(\d{1,2})/);
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(NaN);
+  }
   function toEvent(inst, who) {
-    const start = new Date(Number(inst.dtstart) * 1000);
-    const end = new Date(Number(inst.dtend || inst.dtstart) * 1000);
+    const allday = inst.dtstart == null && !!inst.dstart;
+    let start, end;
+    if (allday) {
+      start = dayOf(inst.dstart);
+      end = inst.dend ? dayOf(inst.dend) : new Date(NaN);
+      if (!(end > start)) { end = new Date(start); end.setDate(end.getDate() + 1); }   // dend 缺或不晚於 dstart → 單日
+    } else {
+      start = new Date(Number(inst.dtstart) * 1000);
+      end = new Date(Number(inst.dtend || inst.dtstart) * 1000);
+    }
     const status = replyStatusOf(inst, who);
     let att = inst.attendee;
     if (typeof att === "string") { try { att = JSON.parse(att); } catch (_) { att = []; } }
     return {
-      start, end, status, hasEnd: !!inst.dtend,
+      start, end, status, allday, hasEnd: allday || !!inst.dtend,
       kind: busyKind(status, start, end),
       summary: inst.summary || "(無標題)",
       organizer: stripMailto(inst.organizer),
@@ -499,7 +516,7 @@
     for (const { date, items } of byDay.values()) {
       const today = date.toDateString() === new Date().toDateString();
       const cards = items.map((ev) => {
-        const t = ev.hasEnd ? `${hhmm(ev.start)}–${hhmm(ev.end)}` : hhmm(ev.start);
+        const t = ev.allday ? "全天" : ev.hasEnd ? `${hhmm(ev.start)}–${hhmm(ev.end)}` : hhmm(ev.start);
         const meta = [];
         if (ev.loc) meta.push(`<div class="mb-loc">📍 ${linkify(ev.loc)}</div>`);
         if (ev.organizer) meta.push(`<div class="mb-meta">👤 ${esc(ev.organizer)}</div>`);
@@ -903,7 +920,7 @@
       rootDirs, BIG_ADD, PAGE_SIZE, MAX_PAGES, MAX_NODES, ADD_TIMEOUT_MS, ADD_POLL_MS, MAX_FAIL_STREAK,
       // 他人行事曆 / 時間軸
       schedUrl, replyStatusOf, busyKind, toEvent, fetchSchedule, commonFreeSlots, workWeek,
-      durationFromForm, mapLimit, renderTimeline, fetchFeedEvents, selfEmail, resetSelf,
+      durationFromForm, mapLimit, renderTimeline, renderBoard, fetchFeedEvents, selfEmail, resetSelf,
       FETCH_LIMIT, MAX_PEOPLE, WORK_START, WORK_END, VIEW_START, VIEW_END, DEFAULT_DURATION_MIN,
       _reset: () => { GSSABID = ""; ROOTS = null; TOPDEPTS = null; ALLDEPTS = null; SCOPE = null; SELF = null; NOTES.length = 0; },
       _abid: () => GSSABID,

@@ -648,6 +648,43 @@ describe("toEvent — 沒有 dtend 的事件", () => {
   });
 });
 
+describe("toEvent — 全天事件（沒有 dtstart/dtend，只有 dstart/dend）", () => {
+  // 實機排程端點的全天事件形狀（已去識別化）：dend 是排他日，info bit 2 = 全天
+  const allday = (extra = {}) => ({ info: 2, offset: 0, dstart: "2026/10/01", dend: "2026/10/02", id: 793,
+    summary: "Off", calendar_id: 1, organizer: "mailto:x@example.com", creator: "x@example.com", ...extra });
+  test("start=dstart 當天 0 點、end=dend 0 點，不是 Invalid Date", () => {
+    const ev = gb.toEvent(allday(), OTHER);
+    assert.equal(+ev.start, +new Date(2026, 9, 1), TZ_NOTE);
+    assert.equal(+ev.end, +new Date(2026, 9, 2));
+    assert.equal(ev.allday, true);
+    assert.equal(ev.kind, "absent");   // 整天請假畫成請假/不在
+  });
+  test("dend 缺或不晚於 dstart → 當單日；YYYYMMDD 也吃", () => {
+    const { dend, ...noEnd } = allday();
+    assert.equal(+gb.toEvent(noEnd, OTHER).end, +new Date(2026, 9, 2));
+    const same = gb.toEvent(allday({ dstart: "20261005", dend: "20261005" }), OTHER);
+    assert.equal(+same.start, +new Date(2026, 9, 5));
+    assert.equal(+same.end, +new Date(2026, 9, 6));
+  });
+  test("一般事件不標全天", () => {
+    assert.equal(gb.toEvent(inst(at(2026, 9, 21, 9), at(2026, 9, 21, 10), "x"), OTHER).allday, false);
+  });
+  test("全天請假那天沒有共同空檔；已拒絕的全天事件不佔時間", async () => {
+    global.fetch = async () => ({ ok: true, json: async () => ({ rspCode: 0, instances: [allday()] }) });
+    const r = await gb.fetchSchedule(OTHER, 0, 1);
+    assert.equal(r.events.length, 1);
+    assert.deepEqual(gb.commonFreeSlots([r.events], new Date(2026, 9, 1), 30), []);
+    const declined = gb.toEvent(allday({ attendee: [{ attendee: "mailto:" + OTHER, attendee_reply_status: 2 }] }), OTHER);
+    assert.equal(declined.kind, null);
+  });
+  test("看板卡片顯示「全天」，不是 00:00–00:00", () => {
+    const box = document.createElement("div");
+    gb.renderBoard(box, [{ ...gb.toEvent(allday(), OTHER), calName: "cal", color: "#000" }], 1, new Date(2026, 9, 1));
+    assert.match(box.innerHTML, /<div class="mb-time">全天<\/div>/);
+    assert.doesNotMatch(box.innerHTML, /00:00–00:00/);
+  });
+});
+
 describe("selfEmail — 自己是誰", () => {
   const LS = () => dom.window.localStorage;
   let prompts;

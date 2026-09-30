@@ -72,15 +72,8 @@ def _parse_wall(v):
     return dt.datetime.strptime(v, "%Y%m%dT%H%M%S" if "T" in v else "%Y%m%d")
 
 
-def _date_field(v):
-    """全天事件的 dstart/dend。實機格式沒錄到，epoch 與常見日期字串都接。"""
-    s = str(v).strip()
-    if re.fullmatch(r"-?\d{9,}", s):
-        return _from_epoch(s).date()
-    m = re.match(r"(\d{4})\D?(\d{1,2})\D?(\d{1,2})", s)
-    if not m:
-        raise M2KError(f"看不懂伺服器回的全天日期：{v!r}")
-    return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+# 全天日期的解析與排程端點共用一份（m2kcal.date_field），兩邊才不會各認各的格式
+_date_field = m2kcal.date_field
 
 
 def _times(start, end, all_day):

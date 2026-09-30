@@ -925,6 +925,68 @@ check("排程事件轉 UI：出席狀態帶到該人身上（暫定要看得出�
 check("排程事件轉 UI：自建的事件不附出席狀態", _rows[1]["attendees"] == [])
 check("排程事件轉 UI：已拒絕照實標示", _rows[2]["attendees"][0]["partstat"] == "DECLINED")
 
+# 25j2) 排程端點的全天事件：沒有 dtstart/dtend，只有 dstart/dend（dend 為排他日、info bit 2=全天）
+#       只讀 dtstart 的話全天請假會被當「解析失敗」跳過，查同事、共同空檔、n8n 判斷請假都看不到
+_allday_inst = {"info": 2, "offset": 0, "dstart": "2026/10/01", "dend": "2026/10/02", "id": 793,
+                "summary": "Off", "calendar_id": 1, "organizer": "mailto:x@example.com",
+                "creator": "x@example.com"}
+_allday_sched = {"rspCode": 0, "instances": [
+    dict(_allday_inst),
+    {"dtstart": 1790296200, "dtend": 1790299800, "offset": 0, "id": 2, "summary": "週會"},
+]}
+m2kcal.clear_notes()
+_ad = m2kcal.parse_schedule(_allday_sched, "x@example.com")
+check("排程全天：不再被當解析失敗跳過", len(_ad) == 2 and m2kcal.take_notes() == [])
+_off = next(r for r in _ad if r["summary"] == "Off")
+check("排程全天：start=dstart 當天 00:00、end=dend 00:00（台北 naive）",
+      _off["start"] == dt.datetime(2026, 10, 1) and _off["end"] == dt.datetime(2026, 10, 2))
+check("排程全天：標成全天、一般事件不是", _off["allday"] is True
+      and next(r for r in _ad if r["summary"] == "週會")["allday"] is False)
+_nd = m2kcal.parse_schedule({"rspCode": 0, "instances": [
+    {k: v for k, v in _allday_inst.items() if k != "dend"},
+    {**_allday_inst, "dstart": "20261005", "dend": "20261005", "summary": "同日"}]}, "x@example.com")
+check("排程全天：dend 缺或不晚於 dstart 時當單日（YYYYMMDD 也吃）",
+      [(r["start"], r["end"]) for r in _nd]
+      == [(dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 2)),
+          (dt.datetime(2026, 10, 5), dt.datetime(2026, 10, 6))])
+_adj = m2kcal.schedule_events_json(_ad, "x@example.com")
+_offj = next(r for r in _adj if r["summary"] == "Off")
+check("排程全天轉 UI：allday=true、start/end 是日期、end 為排他日（同 events_json 的 CalDAV 全天）",
+      _offj["allday"] is True and _offj["start"] == "2026-10-01" and _offj["end"] == "2026-10-02")
+check("排程全天：busy_periods 算整天忙",
+      (dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 2)) in m2kcal.busy_periods(_ad))
+_decl = m2kcal.parse_schedule({"rspCode": 0, "instances": [
+    {**_allday_inst, "attendee": [{"attendee": "mailto:peer@example.com", "attendee_reply_status": 2}]}]},
+    "peer@example.com")
+check("排程全天：已拒絕的全天事件照舊不算忙", len(_decl) == 1 and m2kcal.busy_periods(_decl) == [])
+_rsd = m2kcal.render_schedule({"x@example.com": _ad})
+check("排程全天：文字列表顯示為全天，不是 00:00–00:00", "全天" in _rsd and "00:00–" not in _rsd)
+_rsm = m2kcal.render_schedule({"x@example.com": m2kcal.parse_schedule({"rspCode": 0, "instances": [
+    {**_allday_inst, "dend": "2026/10/03"}]}, "x@example.com")})
+check("排程全天：跨多天的全天事件列出起訖（最後一天是 dend 前一天）", "全天 10/01–10/02" in _rsm)
+import json as _json_mod
+_saved_fs = (m2kcal.connect, m2kcal._sched_get)
+m2kcal.connect = lambda auth: object()
+m2kcal._sched_get = lambda c, e, st, et: (200, "application/json", _json_mod.dumps(_allday_sched))
+try:
+    _fr = m2kfree.common_free_slots(["x@example.com"], dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 3),
+                                    busy_source=m2kfree.live_busy_source(("u", "me@example.com", "pw"),
+                                                                         cookie="key=T"))
+finally:
+    m2kcal.connect, m2kcal._sched_get = _saved_fs
+check("排程全天：全天請假那天不算他有空（只會出現在「少他一人」的次佳解）",
+      any(s.date() == dt.date(2026, 10, 2) and not m for s, _e, m in _fr["slots"])
+      and all(m == ["x@example.com"] for s, _e, m in _fr["slots"] if s.date() == dt.date(2026, 10, 1)))
+if srv:
+    _saved_sv = (srv._cookie, srv._others_schedule)
+    srv._cookie = lambda ctx, force=False: "key=T"
+    srv._others_schedule = lambda ck, ems, s, e, ctx=None: ({"x@example.com": _ad}, [])
+    try:
+        _sv = srv._schedule_view("x@example.com", dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 3), None)
+    finally:
+        srv._cookie, srv._others_schedule = _saved_sv
+    check("排程全天：agenda/list_events 的排程視圖顯示全天請假", "全天" in _sv and "Off" in _sv)
+
 # 25k) 行事曆 UI：對方沒分享時要改用排程端點，而不是回「無法顯示」
 if srv:
     class _EmptyCal:

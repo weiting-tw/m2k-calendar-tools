@@ -1362,12 +1362,39 @@ def _epoch(t):
     return int(t.timestamp())
 
 
+def date_field(v):
+    """全天事件的 dstart/dend（排程端點與原生 feeds 同一種形狀）→ date。
+    實測排程端點給 'YYYY/MM/DD'；YYYYMMDD 與 epoch 秒也一併接。"""
+    s = str(v).strip()
+    if re.fullmatch(r"-?\d{9,}", s):
+        return dt.datetime.fromtimestamp(int(s), TW_TZ).date()
+    m = re.match(r"(\d{4})\D?(\d{1,2})\D?(\d{1,2})", s)
+    if not m:
+        raise M2KError(f"看不懂伺服器回的全天日期：{v!r}")
+    return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _sched_span(i):
+    """排程端點一筆 instance → (start, end, allday)，台北 naive。
+    全天事件沒有 dtstart/dtend，只有 dstart/dend（dend 為排他日；缺或不晚於 dstart 當單日）。"""
+    if i.get("dtstart") is None and i.get("dstart"):
+        sd = date_field(i["dstart"])
+        ed = date_field(i["dend"]) if i.get("dend") else sd
+        if ed <= sd:
+            ed = sd + dt.timedelta(days=1)
+        return dt.datetime.combine(sd, dt.time()), dt.datetime.combine(ed, dt.time()), True
+    s0 = dt.datetime.fromtimestamp(int(i["dtstart"]), TW_TZ).replace(tzinfo=None)
+    e0 = dt.datetime.fromtimestamp(int(i.get("dtend") or i["dtstart"]), TW_TZ).replace(tzinfo=None)
+    return s0, e0, False
+
+
 def parse_schedule(data, who):
     """排程端點 JSON → 事件清單（台北 naive、依開始排序）。
-    每筆 dict(start, end, summary, organizer, status, busy)：
+    每筆 dict(start, end, allday, summary, organizer, status, busy)：
     status 是 REPLY_ZH 的中文，該人不在與會者名單（自建）為「自建」；
     busy 依 CONTEXT.md「忙碌時段」：已拒絕不算，其餘（含暫定）都算。
-    dtstart/dtend 直接是 epoch 秒，不可加 offset（實測；offset 有時是字串）。"""
+    dtstart/dtend 直接是 epoch 秒，不可加 offset（實測；offset 有時是字串）。
+    全天事件改給 dstart/dend 日期（見 _sched_span）。"""
     import json
     code = int(data.get("rspCode") or 0)
     if code == -100:   # Invalid Session（實測）：cookie 壞了或過期
@@ -1381,9 +1408,8 @@ def parse_schedule(data, who):
     out = []
     for i in data.get("instances") or []:
         try:
-            s0 = dt.datetime.fromtimestamp(int(i["dtstart"]), TW_TZ).replace(tzinfo=None)
-            e0 = dt.datetime.fromtimestamp(int(i.get("dtend") or i["dtstart"]), TW_TZ).replace(tzinfo=None)
-        except (KeyError, TypeError, ValueError) as err:
+            s0, e0, allday = _sched_span(i)
+        except (KeyError, TypeError, ValueError, M2KError) as err:
             # 只說「有一筆解析失敗」的話，沒人判斷得出影響誰的忙碌時段、也無從追查。
             # 帶上是誰、哪一筆（主旨與原始 dtstart），才有辦法回頭確認。
             note(f"{who} 的行程有一筆時間解析失敗，已跳過"
@@ -1400,7 +1426,7 @@ def parse_schedule(data, who):
                    and re.sub(r"^mailto:", "", str(a.get("attendee", "")), flags=re.I).strip().lower() == w), None)
         status = "自建" if me is None else REPLY_ZH.get(me.get("attendee_reply_status"), "未回覆")
         out.append({
-            "start": s0, "end": e0,
+            "start": s0, "end": e0, "allday": allday,
             "summary": str(i.get("summary") or "(無標題)"),
             "organizer": re.sub(r"^mailto:", "", str(i.get("organizer") or ""), flags=re.I),
             "status": status,
@@ -1535,9 +1561,13 @@ def render_schedule(by_person):
             if ev["start"].date() != cur:
                 cur = ev["start"].date()
                 out.append(f"   📅 {cur.isoformat()} (週{_WK[cur.weekday()]})")
-            span = (f"{ev['start']:%H:%M}–{ev['end']:%H:%M}"
-                    if ev["end"] - ev["start"] < dt.timedelta(days=1)
-                    else f"{ev['start']:%m/%d %H:%M}–{ev['end']:%m/%d %H:%M}")
+            if ev.get("allday"):
+                last = ev["end"] - dt.timedelta(days=1)   # end 是排他日
+                span = "全天" if last <= ev["start"] else f"全天 {ev['start']:%m/%d}–{last:%m/%d}"
+            elif ev["end"] - ev["start"] < dt.timedelta(days=1):
+                span = f"{ev['start']:%H:%M}–{ev['end']:%H:%M}"
+            else:
+                span = f"{ev['start']:%m/%d %H:%M}–{ev['end']:%m/%d %H:%M}"
             tag = "" if ev["status"] in ("自建", "已接受") else f" [{ev['status']}]"
             org = f"  召集:{ev['organizer']}" if ev["organizer"] and ev["organizer"].lower() != who.lower() else ""
             out.append(f"      {span:<13} {ev['summary']}{tag}{org}")
