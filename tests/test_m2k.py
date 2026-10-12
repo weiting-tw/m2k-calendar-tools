@@ -2194,4 +2194,14 @@ if srv:
           < len(_json.dumps(_rows_in, ensure_ascii=False)) * 0.7)
     check("UI 精簡：_calendar_payload 有套用", "_slim_for_ui(" in _srv_src_now())
 
+# 30) 工具丟出非 M2KError 的例外（CalDAV 查詢、網路逾時）也要回「錯誤：」字串：
+#     直接丟出去，host 會把整個工具呼叫標成失敗；寫入類可能已經生效，要提醒先確認再重試
+if srv:
+    import anyio
+    def _boom(): raise TimeoutError("read timed out")
+    _r = anyio.run(srv._offload(_boom))
+    check("非預期例外 → 回錯誤字串、不往外丟", isinstance(_r, str) and _r.startswith("錯誤："))
+    check("非預期例外 → 訊息帶例外類型與內容", "TimeoutError" in _r and "read timed out" in _r)
+    check("非預期例外 → 提醒先確認結果再重試", "確認" in _r)
+
 print("\n全部通過 ✅")

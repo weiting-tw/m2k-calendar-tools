@@ -40,9 +40,9 @@ async def test_stdio():
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
             assert tools == ["agenda", "book", "calendar_data", "delete_event",
-                             "find_free_slots", "find_person", "get_event",
+                             "find_free_slots", "find_group", "find_person", "get_event",
                              "list_calendars", "list_events", "list_invitations",
-                             "respond_event", "search_events",
+                             "others_agenda", "respond_event", "search_events",
                              "show_calendar", "update_event"], tools
             prompts = sorted(p.name for p in (await s.list_prompts()).prompts)
             assert prompts == ["morning-brief", "reschedule",
@@ -63,10 +63,8 @@ async def test_stdio():
             assert uri.startswith("ui://m2k-calendar/calendar"), uri  # URI 帶內容 hash 版本
             assert ui_tools["calendar_data"]["resourceUri"] == uri
             assert "visibility" not in ui_tools["calendar_data"]  # 不能是 app-only，見 server 註解
-            # 行事曆查詢/異動工具都掛 UI（客戶端支援 MCP Apps 時渲染行事曆畫面）
-            for n in ("agenda", "list_events", "book", "update_event",
-                      "respond_event", "delete_event"):
-                assert ui_tools[n]["resourceUri"] == uri, n
+            # 只有這兩個掛 UI：host 每呼叫一次掛 UI 的工具就多開一個 app
+            assert set(ui_tools) == {"show_calendar", "calendar_data"}, sorted(ui_tools)
             rr = await s.read_resource(uri)
             assert rr.contents[0].mimeType == "text/html;profile=mcp-app"
             print("app ui resource + tool meta: OK")

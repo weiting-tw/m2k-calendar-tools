@@ -22,7 +22,7 @@ m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
 | 模糊群組名展開成員排會議（「約某某部門開會」） | MCP 工具：`find_group`（優先讀公司通訊錄的**正式部門群組**——CardDAV，用應用程式專用密碼即可；查無部門才退回你參與過的定期會議。多候選/名單要向使用者確認後再 book） |
 | 建重複會議 / 加提醒 | `book` 的 `repeat`（daily/weekly/monthly）+ `repeat_until`、`reminder_minutes` |
-| 互動行事曆畫面（週/月檢視、UI 上直接增改刪、拖曳改時間） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI；agenda/list_events/book/update_event/respond_event/delete_event 也會帶出同一個畫面） |
+| 互動行事曆畫面（週/月檢視、UI 上直接增改刪、拖曳改時間） | MCP 工具：`show_calendar`（支援 MCP Apps 的客戶端會渲染 UI；只有它會帶出畫面，多人用 `person` 逗號分隔疊在同一個畫面） |
 | 回覆會議邀請（接受/暫定/拒絕，只改自己日曆） | MCP 工具：`respond_event` |
 | 查自己行程 / 建會議（終端機） | `python3 src/m2kcal.py ...` |
 | 產生看板 HTML（每天一欄） | `python3 src/m2kcal.py board --days 7` |

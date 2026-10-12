@@ -934,7 +934,7 @@ app.onerror = console.error;
 app.onteardown = async () => ({});
 
 app.ontoolinput = (params) => {
-  // 任何行事曆工具（show_calendar/agenda/list_events/book…）的參數決定初始檢視範圍
+  // 啟動工具（show_calendar/calendar_data）的參數決定初始檢視範圍
   const a = params.arguments as { start?: string; end?: string; days?: number; person?: string | string[] } | undefined;
   if (a?.start) {
     const d = parseDT(a.start);
@@ -967,7 +967,7 @@ app.ontoolresult = (result) => {
     // 工具給的範圍（例如今天起 7 天）不一定蓋得住週檢視（週日起），蓋不住就用同一批人補抓
     if (covered()) render(); else fetchData(true);
   }
-  else fetchData(true);  // 可能是模型做了異動（book/update…），強制重抓
+  else fetchData(true);  // 結果裡讀不到資料，自己重抓
 };
 
 app.connect().then(() => {

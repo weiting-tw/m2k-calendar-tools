@@ -58,6 +58,7 @@ issuer 必須是用戶端可達的 HTTPS 網址（claude.ai 的連線來自 Anth
 """
 import argparse
 import functools
+import logging
 import os
 import re
 import sys
@@ -1316,11 +1317,12 @@ def _register_prompts(server: "FastMCP") -> None:
                 f"{now:%H:%M} 台北 +08:00")
 
 
+# 行事曆 UI 只掛在 show_calendar／calendar_data（見 _register_calendar_app）。
+# host 每呼叫一次掛 UI 的工具就多開一個 app，排多人會議時模型會逐人查行程、
+# book 也可能為了確認名單送兩次，一路疊出好幾個 app。
 TOOLS = (list_calendars, search_events, find_free_slots, find_person, find_group,
-         get_event, list_invitations, others_agenda)
-# 行事曆相關工具都掛 UI meta：支援 MCP Apps 的客戶端呼叫時一律渲染行事曆畫面
-# （文字輸出照舊給模型；UI 端自行透過 calendar_data 取結構化資料）
-APP_TOOLS = (agenda, list_events, book, update_event, respond_event, delete_event)
+         get_event, list_invitations, others_agenda,
+         agenda, list_events, book, update_event, respond_event, delete_event)
 
 
 def _transport_security(issuer: str | None, port: int):
@@ -1357,6 +1359,10 @@ def _offload(fn):
     functools.wraps 會設 __wrapped__，FastMCP 靠 inspect.signature 產生參數
     schema 與注入 Context，跟隨 __wrapped__ 後拿到的仍是原函式簽章。
     代價：tool 之間變成真並行，共享可變狀態需自行保護（見 _CACHE_LOCK）。
+
+    工具只 catch M2KError；CalDAV 查詢重試用盡、排程端點逾時等會丟出原始例外，
+    丟到 FastMCP 會變成 isError，host 把整個工具呼叫標成失敗。這裡統一轉成
+    「錯誤：」字串，跟可預期錯誤同一種呈現；原始 traceback 留在 server log。
     """
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
@@ -1365,7 +1371,13 @@ def _offload(fn):
         def call():
             # 每次呼叫先清，避免沿用同一 worker thread 的上次殘留
             m2kcal.clear_notes()
-            out = fn(*args, **kwargs)
+            try:
+                out = fn(*args, **kwargs)
+            except Exception as err:
+                logging.getLogger(__name__).exception("tool %s failed", fn.__name__)
+                # 寫入類可能已經生效（例如請求送出後才逾時），直接重試會重複建立
+                return (f"錯誤：執行時發生非預期的問題（{type(err).__name__}: {err}）。"
+                        "若剛才是建立／修改／刪除會議，請先查行事曆確認結果，再決定要不要重試。")
             notes = m2kcal.take_notes()
             if notes and isinstance(out, str):
                 out += "\n\n⚠ 有資料被跳過，結果可能不完整：\n" + "\n".join(
@@ -1391,8 +1403,6 @@ def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
     server._mcp_server.version = __version__
     for f in TOOLS:
         server.tool()(_offload(f))
-    for f in APP_TOOLS:
-        server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}})(_offload(f))
     _register_calendar_app(server)
     _register_prompts(server)
     if host:
