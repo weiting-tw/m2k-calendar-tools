@@ -68,10 +68,10 @@ import datetime as dt
 from typing import Any
 
 try:
-    from mcp.server.fastmcp import FastMCP, Context
+    from mcp.server.mcpserver import MCPServer, Context
     from mcp.server.auth.middleware.auth_context import get_access_token
 except ImportError:
-    sys.exit('需要 mcp 套件：pip install "mcp[cli]"')
+    sys.exit('需要 mcp 2.3.x：pip install -U "mcp[cli]~=2.3.0"')
 
 import m2kcal  # 重用既有 CalDAV / ICS 邏輯
 import m2kfree  # 共同空檔
@@ -94,10 +94,10 @@ def _auth(ctx):
     tok = get_access_token()
     if tok is not None and getattr(tok, "m2k_user", ""):
         return (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), tok.m2k_user, tok.m2k_pass)
-    req = getattr(ctx.request_context, "request", None) if ctx else None
-    if req is None:
+    headers = ctx.headers if ctx else None
+    if headers is None:
         return None
-    user, pwd = m2kcal.parse_basic_auth(req.headers.get("authorization", ""))
+    user, pwd = m2kcal.parse_basic_auth(headers.get("authorization", ""))
     return (os.environ.get("M2K_URL", m2kcal.DEFAULT_URL), user, pwd)
 
 
@@ -110,9 +110,9 @@ def _explicit_cookie(ctx):
     tok = get_access_token()
     if tok is not None and getattr(tok, "m2k_user", ""):
         return getattr(tok, "m2k_cookie", "") or ""
-    req = getattr(ctx.request_context, "request", None) if ctx else None
-    if req is not None:
-        return req.headers.get(COOKIE_HEADER, "")
+    headers = ctx.headers if ctx else None
+    if headers is not None:
+        return headers.get(COOKIE_HEADER, "")
     return os.environ.get("M2K_COOKIE", "")
 
 
@@ -1244,7 +1244,7 @@ def others_agenda(emails: list[str], start: str = "", days: int = 7,
     return head + "\n" + body + tail
 
 
-def _register_calendar_app(server: "FastMCP") -> None:
+def _register_calendar_app(server: "MCPServer") -> None:
     server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
                 structured_output=True)(show_calendar)
     # calendar_data 不設 visibility:["app"]：部分 host（如 Claude Desktop）
@@ -1259,7 +1259,7 @@ def _register_calendar_app(server: "FastMCP") -> None:
             return f.read()
 
 
-def _register_prompts(server: "FastMCP") -> None:
+def _register_prompts(server: "MCPServer") -> None:
     """Prompts＝客戶端可直接點選的工作流程範本。價值在把「正確的工具
     使用順序」固化，比散在各工具 docstring 的提示更能引導模型。"""
 
@@ -1351,17 +1351,19 @@ def _transport_security(issuer: str | None, port: int):
 def _offload(fn):
     """把同步 tool 包成 async，真正的工作丟到 worker thread。
 
-    FastMCP 對同步函式是直接在事件循環裡呼叫的（已查證 mcp SDK 1.29.1：
-    func_metadata.call_fn_with_arg_validation 裡沒有 to_thread / run_sync），
-    所以一個慢請求就會卡住整台 server ——CalDAV 搜尋、首次 IMAP 建池
-    （一次抓兩個資料夾各 1500 封）動輒數秒到數十秒，共用部署時所有人一起等。
+    CalDAV 搜尋、首次 IMAP 建池（一次抓兩個資料夾各 1500 封）動輒數秒到數十秒，
+    在事件循環裡跑會卡住整台 server，共用部署時所有人一起等。mcp SDK 2.x 本身
+    也會把同步函式丟到 worker thread（已查證 2.3.0：func_metadata.call_fn 走
+    anyio.to_thread.run_sync），這裡仍自己丟，是因為 m2kcal 的備註是 thread-local：
+    clear_notes、tool 本體、take_notes 必須在同一條 worker thread 裡依序跑完。
 
-    functools.wraps 會設 __wrapped__，FastMCP 靠 inspect.signature 產生參數
-    schema 與注入 Context，跟隨 __wrapped__ 後拿到的仍是原函式簽章。
+    functools.wraps 會設 __wrapped__ 並複製 __annotations__：MCPServer 用
+    inspect.signature（跟隨 __wrapped__）產生參數 schema、用型別註記找出 Context
+    參數，兩者拿到的都是原函式的簽章。
     代價：tool 之間變成真並行，共享可變狀態需自行保護（見 _CACHE_LOCK）。
 
     工具只 catch M2KError；CalDAV 查詢重試用盡、排程端點逾時等會丟出原始例外，
-    丟到 FastMCP 會變成 isError，host 把整個工具呼叫標成失敗。這裡統一轉成
+    丟到 MCPServer 會變成 isError，host 把整個工具呼叫標成失敗。這裡統一轉成
     「錯誤：」字串，跟可預期錯誤同一種呈現；原始 traceback 留在 server log。
     """
     @functools.wraps(fn)
@@ -1388,27 +1390,19 @@ def _offload(fn):
     return wrapper
 
 
-def build_server(host=None, port=None, oauth=False, issuer=None) -> FastMCP:
-    security = _transport_security(issuer, port or 8763)
+def build_server(oauth=False, issuer=None) -> MCPServer:
     if oauth:
         import m2k_oauth
         provider, auth_settings = m2k_oauth.create(issuer)
-        server = FastMCP("m2k-calendar", auth_server_provider=provider,
-                         auth=auth_settings, transport_security=security)
+        server = MCPServer("m2k-calendar", version=__version__,
+                           auth_server_provider=provider, auth=auth_settings)
         m2k_oauth.add_login_routes(server, provider)
     else:
-        server = FastMCP("m2k-calendar", transport_security=security)
-    # FastMCP 沒開放 version 參數，低階 Server 預設回報 mcp SDK 版本——
-    # 直接設定讓 initialize 的 serverInfo 顯示本服務版本
-    server._mcp_server.version = __version__
+        server = MCPServer("m2k-calendar", version=__version__)
     for f in TOOLS:
         server.tool()(_offload(f))
     _register_calendar_app(server)
     _register_prompts(server)
-    if host:
-        server.settings.host = host
-    if port:
-        server.settings.port = port
     return server
 
 
@@ -1431,12 +1425,19 @@ class _NoBufferMiddleware:
         return await self.app(scope, receive, send2)
 
 
-def _run_http(server: "FastMCP") -> None:
+def _run_http(server: "MCPServer", host: str, port: int, issuer: str | None = None) -> None:
     import uvicorn
+    # 刻意不把 host 傳給 streamable_http_app：SDK 只在 host 是 127.0.0.1 等本機位址
+    # （預設值）時，才會在 transport_security=None 的情況自動開啟只放行 localhost
+    # 的防護。傳入 --host 0.0.0.0 會讓防護整個關掉，跟 1.x 的行為不同。
+    # session_idle_timeout／max_sessions 設 None＝維持 1.x 行為（舊協議 session 不回收、
+    # 不設上限）。2.x 預設閒置 30 分鐘回收，client 下一個請求會拿到 404、得重新
+    # initialize；claude.ai connector 會不會自動重連沒驗證過，先不冒這個險。
+    app = server.streamable_http_app(transport_security=_transport_security(issuer, port),
+                                     session_idle_timeout=None, max_sessions=None)
     # timeout_graceful_shutdown：SSE 長連線不會自己斷，收到 SIGTERM 後
     # 最多等 3 秒就強制關閉，容器 stop/重啟才不會卡住
-    uvicorn.run(_NoBufferMiddleware(server.streamable_http_app()),
-                host=server.settings.host, port=server.settings.port,
+    uvicorn.run(_NoBufferMiddleware(app), host=host, port=port,
                 timeout_graceful_shutdown=3)
 
 
@@ -1454,8 +1455,9 @@ if __name__ == "__main__":
     if args.oauth:
         if not args.issuer:
             ap.error("--oauth 需要 --issuer（用戶端可達的對外網址）")
-        _run_http(build_server(args.host, args.port, oauth=True, issuer=args.issuer))
+        _run_http(build_server(oauth=True, issuer=args.issuer), args.host, args.port,
+                  issuer=args.issuer)
     elif args.http:
-        _run_http(build_server(args.host, args.port))
+        _run_http(build_server(), args.host, args.port)
     else:
         build_server().run()

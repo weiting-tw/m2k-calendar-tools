@@ -458,6 +458,9 @@ def create(issuer: str, key_path=DEFAULT_KEY_PATH,
         client_registration_options=ClientRegistrationOptions(
             enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]),
         required_scopes=[SCOPE],
+        # token 是本模組自己鑄的，不綁 RFC 8707 resource（AccessToken.resource 為空），
+        # 開啟檢查會擋掉所有 token。明講 False＝維持 1.x 行為，也免得 SDK 2.x 每次啟動警告
+        validate_token_resource=False,
     )
     return provider, settings
 
