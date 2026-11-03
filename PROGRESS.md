@@ -91,7 +91,7 @@ webmail 使用者腳本做群組排會議與多人看板。
 | `src/m2kcal.py` | 行事曆 CLI（CalDAV）:cals/agenda/list/**board**/book/raw/diag | ✅ 真實環境驗證（讀+寫+看板） |
 | `src/m2kgroup.py` | 通訊錄群組展開 CLI（需帶 session token） | ✅ 語法+離線測試（實務被腳本取代） |
 | `userscripts/m2k-calendar.user.js` | webmail 使用者腳本：排會議（搜人/搜部門遞迴/貼 email、查與會者空檔與共同空檔、一鍵建立）＋ 多人看板（可用 email 加人、不必對方分享） | ✅ 離線測試 + 實機探測 |
-| `src/m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install mcp[cli]`） |
+| `src/m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install "mcp[cli]~=2.3.0"`） |
 | `skill/SKILL.md` | m2k-calendar skill（供 Settings ▸ Capabilities 匯入） | ✅ |
 | `tests/test_m2k.py` | 離線單元測試 | ✅ 30 項全過 |
 | `README.md` | 使用說明 | — |

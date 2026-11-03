@@ -36,11 +36,15 @@ jobs:
           npm ci
           npm test
 
+      - name: 安裝 Python 相依（與 Docker image 同一份 requirements.txt）
+        run: python -m pip install --quiet -r requirements.txt
+
       - name: 行事曆離線單元測試
-        # 只需 icalendar：caldav 是延遲載入的，純函式測試用不到（見 m2kcal._caldav）
-        run: |
-          python -m pip install --quiet icalendar
-          python tests/test_m2k.py
+        run: python tests/test_m2k.py
+
+      - name: MCP 煙霧測試（實際啟動 server；上游導到本機，免網路與帳密）
+        # image 會裝 requirements 範圍內當下最新的 mcp，這裡擋住不相容的新版上 :latest
+        run: python tests/smoke_mcp.py
 
       - name: healthcheck 腳本可執行（server 沒起來時要回 unhealthy）
         run: |

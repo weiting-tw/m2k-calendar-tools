@@ -163,7 +163,7 @@ session，換到的 cookie 只在記憶體快取（預設 10 分鐘）、不落�
 `cd apps/calendar && npm install && npm run build`。
 
 ```bash
-pip install "mcp[cli]" caldav icalendar requests
+pip install "mcp[cli]~=2.3.0" caldav icalendar requests
 ```
 
 **Claude Desktop**（`claude_desktop_config.json`）：
@@ -289,8 +289,8 @@ CI 也有同一支掃描，但那是事後偵測——它 fail 時 commit 已經
    遞迴規模、chip 的 `data-id` 格式。可重複跑；輸出含真實通訊錄內容，外流前請斟酌。
 3. **行事曆離線單元測試**：`python3 tests/test_m2k.py`（只需 `pip install icalendar`）
    → 驗證 ICS 產生/解析、時間解析、linkify 跳脫、Basic 認證解析。
-   caldav 與 requests 都是延遲載入的，純函式測試用不到，所以 CI 不必裝整條依賴鏈。
-4. **MCP 煙霧測試**（免真帳密，需 `pip install "mcp[cli]" caldav icalendar requests`）：
+   caldav 與 requests 都是延遲載入的，純函式測試用不到。
+4. **MCP 煙霧測試**（免真帳密，需 `pip install -r requirements.txt`；CI 每次 push main 都會跑）：
    `python3 tests/smoke_mcp.py` → 自動啟動 server，驗證 stdio 與 HTTP 兩種模式的
    工具呼叫、無/壞 Authorization 拒絕、假憑證 pass-through、錯誤後 server 存活。
 5. **使用者腳本即時測試**：在「會議排程」頁開啟事件編輯、切到「與會者」頁籤，

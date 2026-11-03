@@ -12,7 +12,7 @@ m2k MCP server — 讓 Claude 直接查你的 m2k 行事曆與建立會議。
       token 內持有，伺服器不存。
 
 安裝：
-  pip install "mcp[cli]" caldav icalendar requests
+  pip install "mcp[cli]~=2.3.0" caldav icalendar requests
   # OAuth 模式另需： pip install cryptography
 
 == 模式一：stdio（本機、單人，預設）==
@@ -1329,8 +1329,10 @@ def _transport_security(issuer: str | None, port: int):
     """SDK 的 DNS-rebinding 防護預設只放行 localhost 的 Host 標頭——
     部署在反向代理後（Host=對外網域）會把已授權請求全擋成
     421 Invalid Host header。這裡把 issuer 網域（OAuth 模式）與
-    M2K_ALLOWED_HOSTS 環境變數（HTTP 模式）加入白名單；
-    兩者皆未提供時回 None＝維持 SDK 預設（純本機情境）。"""
+    M2K_ALLOWED_HOSTS 環境變數（HTTP 模式）加入白名單。
+    兩者皆未提供時也明確回傳只放行本機的設定（與 SDK 綁本機時自動開的那組相同），
+    不回 None 交給 SDK：SDK 只在 host 參數是本機位址時才自動開防護，
+    有人把 --host 0.0.0.0 傳進 streamable_http_app 或 SDK 改了預設，防護就會無聲關掉。"""
     from urllib.parse import urlparse
     from mcp.server.transport_security import TransportSecuritySettings
     hosts = [h.strip() for h in os.environ.get("M2K_ALLOWED_HOSTS", "").split(",")
@@ -1342,10 +1344,15 @@ def _transport_security(issuer: str | None, port: int):
             hosts += [p.netloc, p.hostname]
             origins += [f"{p.scheme}://{p.netloc}"]
     if not hosts:
-        return None
-    hosts += ["localhost", "127.0.0.1", f"localhost:{port}", f"127.0.0.1:{port}"]
-    origins += [f"http://localhost:{port}", f"http://127.0.0.1:{port}"]
-    return TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+            allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"])
+    hosts += ["localhost", "127.0.0.1", "[::1]",
+              f"localhost:{port}", f"127.0.0.1:{port}", f"[::1]:{port}"]
+    origins += [f"http://localhost:{port}", f"http://127.0.0.1:{port}", f"http://[::1]:{port}"]
+    return TransportSecuritySettings(enable_dns_rebinding_protection=True,
+                                     allowed_hosts=hosts, allowed_origins=origins)
 
 
 def _offload(fn):
@@ -1427,9 +1434,8 @@ class _NoBufferMiddleware:
 
 def _run_http(server: "MCPServer", host: str, port: int, issuer: str | None = None) -> None:
     import uvicorn
-    # 刻意不把 host 傳給 streamable_http_app：SDK 只在 host 是 127.0.0.1 等本機位址
-    # （預設值）時，才會在 transport_security=None 的情況自動開啟只放行 localhost
-    # 的防護。傳入 --host 0.0.0.0 會讓防護整個關掉，跟 1.x 的行為不同。
+    # transport_security 一律明確給（_transport_security 不回 None），SDK 依 host 參數
+    # 決定要不要自動開防護的邏輯不會介入；不傳 host，免得兩邊各有一套本機判斷。
     # session_idle_timeout／max_sessions 設 None＝維持 1.x 行為（舊協議 session 不回收、
     # 不設上限）。2.x 預設閒置 30 分鐘回收，client 下一個請求會拿到 404、得重新
     # initialize；claude.ai connector 會不會自動重連沒驗證過，先不冒這個險。

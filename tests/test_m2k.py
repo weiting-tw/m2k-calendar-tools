@@ -585,7 +585,7 @@ finally:
 
 # 20) find_free_slots 帶 attendees 但沒 Cookie：退到「已分享行事曆」，並明講怎麼提供 Cookie
 # 需要 mcp 套件才 import 得動 server（它缺套件時會直接 sys.exit，所以先探 mcp 本身）；
-# CI 只裝 icalendar，沒有就明講略過，不假裝通過
+# 只裝 icalendar 時沒有 mcp，就明講略過，不假裝通過
 import importlib.util
 if importlib.util.find_spec("mcp") is None:
     print("SKIP find_free_slots 帶 attendees（缺 mcp 套件，pip install -r requirements.txt 後再跑）")
@@ -677,7 +677,7 @@ if srv:
         m2kcal.session_cookie, m2kcal.creds = _oc
         if _saved is not None: os.environ["M2K_COOKIE"] = _saved
 
-# 23) person_calendar：需要 caldav 套件（CI 只裝 icalendar，沒有就明講略過）
+# 23) person_calendar：需要 caldav 套件（只裝 icalendar 時沒有，就明講略過）
 if importlib.util.find_spec("caldav") is None:
     print("SKIP person_calendar（缺 caldav 套件）")
 else:
@@ -2203,5 +2203,18 @@ if srv:
     check("非預期例外 → 回錯誤字串、不往外丟", isinstance(_r, str) and _r.startswith("錯誤："))
     check("非預期例外 → 訊息帶例外類型與內容", "TimeoutError" in _r and "read timed out" in _r)
     check("非預期例外 → 提醒先確認結果再重試", "確認" in _r)
+
+# 31) Host 白名單：沒設白名單也要明確開防護，不能回 None 交給 SDK——SDK 只在 host 參數
+#     是本機位址時才自動開，綁 0.0.0.0 的部署會無聲失去 DNS-rebinding 防護
+if srv:
+    _saved_ah = os.environ.pop("M2K_ALLOWED_HOSTS", None)
+    try:
+        _ts = srv._transport_security(None, 8763)
+    finally:
+        if _saved_ah is not None: os.environ["M2K_ALLOWED_HOSTS"] = _saved_ah
+    check("沒設白名單 → 仍明確開啟 DNS-rebinding 防護",
+          _ts is not None and _ts.enable_dns_rebinding_protection is True)
+    check("沒設白名單 → 只放行本機（含 IPv6），同 SDK 綁本機時的預設",
+          sorted(_ts.allowed_hosts) == ["127.0.0.1:*", "[::1]:*", "localhost:*"])
 
 print("\n全部通過 ✅")

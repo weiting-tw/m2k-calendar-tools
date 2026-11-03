@@ -234,12 +234,15 @@ def main():
         proc.terminate()
         proc.wait(timeout=10)
 
-    # Host 白名單：綁 0.0.0.0（同 Dockerfile 預設），才測得到「把 host 傳給
-    # streamable_http_app 會關掉防護」這類回歸。沒設白名單只放行本機 Host；
-    # 設了 M2K_ALLOWED_HOSTS 後放行該網域、其他照擋。
+    # Host 白名單：綁 0.0.0.0（同 Dockerfile 預設），確認這種組態下防護仍然開著
+    # （SDK 只在綁本機時才自動開；_transport_security 不回 None 由 test_m2k #31 把關）。
+    # 沒設白名單只放行本機 Host；設了 M2K_ALLOWED_HOSTS 後放行該網域、其他照擋。
+    # 兩種情況都要放行 IPv6 本機 [::1]。
     for allowed, cases in (
-            ("", [("example.test", True), (f"127.0.0.1:{PORT_HOST}", False)]),
-            ("example.test", [("example.test", False), ("evil.test", True)])):
+            ("", [("example.test", True), (f"127.0.0.1:{PORT_HOST}", False),
+                  (f"[::1]:{PORT_HOST}", False)]),
+            ("example.test", [("example.test", False), ("evil.test", True),
+                              (f"[::1]:{PORT_HOST}", False)])):
         proc = subprocess.Popen(
             [sys.executable, SRV, "--http", "--host", "0.0.0.0", "--port", str(PORT_HOST)],
             env={**os.environ, "M2K_ALLOWED_HOSTS": allowed},

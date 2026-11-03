@@ -41,7 +41,7 @@ TW_TZ = dt.timezone(dt.timedelta(hours=8))  # Asia/Taipei
 
 def _caldav():
     """延遲載入 caldav。ICS 產生/解析、時間處理這些純函式用不到它，
-    頂層 import 會讓「離線測試」與 CI 也被迫安裝 CalDAV 相關套件
+    頂層 import 會讓「離線測試」也被迫安裝 CalDAV 相關套件
     ——先前 tests/test_m2k.py 就是因此整批跑不起來（21 個受測函式全是純函式）。
     丟 M2KError 而不是 sys.exit：MCP server 不該因為缺套件被整個殺掉。"""
     try:
