@@ -1,4 +1,4 @@
-mcp[cli]>=1.28,<2      # 2.x 移除了 mcp.server.fastmcp，會直接啟動失敗
+mcp[cli]~=2.3.0        # 只收 2.3.x 修補版；升 2.4+ 要手動改這行並重跑 tests/smoke_mcp.py（CI 也會跑）
 caldav>=1.4
 icalendar>=6.0
 requests>=2.31

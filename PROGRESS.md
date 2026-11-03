@@ -91,7 +91,7 @@ webmail 使用者腳本做群組排會議與多人看板。
 | `src/m2kcal.py` | 行事曆 CLI（CalDAV）:cals/agenda/list/**board**/book/raw/diag | ✅ 真實環境驗證（讀+寫+看板） |
 | `src/m2kgroup.py` | 通訊錄群組展開 CLI（需帶 session token） | ✅ 語法+離線測試（實務被腳本取代） |
 | `userscripts/m2k-calendar.user.js` | webmail 使用者腳本：排會議（搜人/搜部門遞迴/貼 email、查與會者空檔與共同空檔、一鍵建立）＋ 多人看板（可用 email 加人、不必對方分享） | ✅ 離線測試 + 實機探測 |
-| `src/m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install mcp[cli]`） |
+| `src/m2k_mcp_server.py` | MCP server：讓 Claude 直接查行程/建立會議（CalDAV） | ✅ 語法驗證（需 `pip install "mcp[cli]~=2.3.0"`） |
 | `skill/SKILL.md` | m2k-calendar skill（供 Settings ▸ Capabilities 匯入） | ✅ |
 | `tests/test_m2k.py` | 離線單元測試 | ✅ 30 項全過 |
 | `README.md` | 使用說明 | — |
@@ -112,9 +112,7 @@ webmail 使用者腳本做群組排會議與多人看板。
    OAuth 登入頁貼上），伺服器不存、短效過期需重貼。決策見 `docs/adr/0002-mcp-cookie-passthrough.md`。
 4. **多層部門**已遞迴展開（本部門 + 所有子孫部門，跨部門去重）;每個部門一支請求，節點上限 300。搜部門時頂層沒中才搜整棵樹（部門多時要幾十秒，跑完快取）。
 5. **GIL 警告**:Python 3.13t + lxml 的環境警告，加 `PYTHON_GIL=0` 可消，無害。
-6. **`mcp` 套件 2.x 不相容**:2.x 移除了 `mcp.server.fastmcp`，server 會直接啟動失敗;
-   `requirements.txt` 已釘 `<2`。要升級得先移植到新 API。
-7. **靜默吞錯已改為留痕**:解析失敗仍會跳過該筆（比整批失敗好），但會透過
+6. **靜默吞錯已改為留痕**:解析失敗仍會跳過該筆（比整批失敗好），但會透過
    `m2kcal.note()` 累積，由 MCP tool 回覆末尾的「⚠ 有資料被跳過」列出。
    警告用 thread-local 隔離，不會混到別的使用者。
 
