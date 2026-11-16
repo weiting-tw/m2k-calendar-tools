@@ -1508,6 +1508,81 @@ def fetch_schedule(cookie, email, s, e):
     return parse_schedule(data, email)
 
 
+# ---------- 公用行事曆：會議室、公務車、設備（需 webmail Cookie） ----------
+# 它們不是帳號：拿 id 打排程端點回「查無此帳號」（rspCode -102，實測），CalDAV 也列不到，
+# 只有 webmail 自己用的 feeds 端點查得到。id 長得像 email（<編號>@<網域>）；
+# instances 與排程端點同一種形狀（dtstart/dtend 為 epoch 秒，全天給 dstart/dend），沿用 parse_schedule。
+PUBLIC_FEEDS = "/cgi-bin/cal/calsrv/feeds/default/public/"
+
+
+def _feeds_get(cookie, path, params=None):
+    """實際打 feeds 端點。拆出來讓測試能換掉。回 (status_code, content_type, text)。"""
+    import requests
+    r = requests.get(M2K_BASE + path, params=params,
+                     headers={"Cookie": cookie, "Referer": M2K_BASE + "/",
+                              "User-Agent": "Mozilla/5.0 (m2k-calendar)"},
+                     timeout=20, allow_redirects=False)
+    return r.status_code, r.headers.get("content-type", ""), r.text
+
+
+def _feeds_json(cookie, path, params=None):
+    import json
+    import requests
+    if not (cookie or "").strip():
+        raise M2KError(NO_COOKIE_HINT)
+    try:
+        code, ctype, text = _feeds_get(cookie.strip(), path, params)
+    except requests.RequestException as err:
+        # 轉成 M2KError：一次查好幾間時只算那一間查不到（訊息不可含「過期」，否則會被當成 session 失效去重換）
+        raise M2KError(f"連線 webmail 行事曆失敗或逾時（{err}）")
+    if code != 200 or "json" not in ctype.lower():
+        raise M2KError(f"webmail Cookie 無效或已過期（HTTP {code}），請從已登入的瀏覽器重新複製。")
+    try:
+        return json.loads(text)
+    except ValueError:
+        raise M2KError("行事曆回應不是 JSON，Cookie 可能已過期。")
+
+
+def public_calendars(cookie):
+    """列出公用行事曆。回 [{"id", "name"}]，保持伺服器順序。"""
+    data = _feeds_json(cookie, PUBLIC_FEEDS)
+    code = int(data.get("rspCode") or 0)
+    if code == -100:
+        raise M2KError("webmail Cookie 無效或已過期，請從已登入的瀏覽器重新複製 key= 那一個 cookie。")
+    if code != 0:
+        raise M2KError(f"公用行事曆清單回 rspCode {code} {data.get('rspMsg') or ''}".rstrip())
+    return [{"id": str(c["id"]), "name": str(c.get("display_name") or c["id"])}
+            for c in data.get("calendars") or [] if c.get("id")]
+
+
+def fetch_public(cookie, cal_id, s, e):
+    """查一本公用行事曆在 [s, e) 的預約，形狀同 fetch_schedule。
+    行事曆本身不在與會者名單裡，parse_schedule 會把每筆都當「自建」、算忙碌。"""
+    from urllib.parse import quote
+    data = _feeds_json(cookie, PUBLIC_FEEDS + quote(cal_id, safe="@") + "/events/instances/",
+                       {"starttime": _epoch(s), "endtime": _epoch(e)})
+    return parse_schedule(data, cal_id)
+
+
+def match_public(cals, names):
+    """依名稱找公用行事曆：名稱或 id 完全相同就只取那本；否則取名稱含該關鍵字的全部
+    （「3F」→ 3F 的每一間）。不分大小寫。回 (命中的行事曆（去重、保持順序）, 沒命中的名稱)。"""
+    hits, seen, missing = [], set(), []
+    for raw in names or []:
+        n = (raw or "").strip().lower()
+        if not n:
+            continue
+        found = ([c for c in cals if n in (c["id"].lower(), c["name"].strip().lower())]
+                 or [c for c in cals if n in c["name"].lower()])
+        if not found:
+            missing.append(raw.strip())
+        for c in found:
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                hits.append(c)
+    return hits, missing
+
+
 _STATUS_PARTSTAT = {"已接受": "ACCEPTED", "暫定": "TENTATIVE",
                     "已拒絕": "DECLINED", "未回覆": "NEEDS-ACTION"}
 

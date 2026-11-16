@@ -18,6 +18,7 @@ m2k（Mail2000）行事曆工具組。**先依情境選工具**：
 | 查同事的行事曆（「某人這週有什麼會」） | `agenda` / `list_events` / `show_calendar` 帶 `person`（模糊名字或完整 email；有分享讀完整內容，沒分享自動改用排程資料，只有時間、標題與出席狀態） |
 | 關鍵字搜會議（標題/地點/描述） | MCP 工具：`search_events` |
 | 找空檔（「明天哪裡有空 1 小時」「找我跟 A、B 都有空的時間」） | MCP 工具：`find_free_slots`（帶 `attendees` 會自動換 webmail session 查所有人） |
+| 查會議室空檔（「明天下午哪間 3F 會議室有空」） | MCP 工具：`find_room_slots`（`rooms` 給名稱關鍵字，名稱含該字的各自列空檔；省略則列出所有公用行事曆。會議室不是帳號，`find_free_slots`／`others_agenda` 查不到） |
 | 看同事的行程（「pekka 下週有什麼會」） | MCP 工具：`others_agenda`（自動換 webmail session，任何人都查得到） |
 | 模糊人名查 email（「把 pekka 加進會議」） | MCP 工具：`find_person`（行事曆歷史＋信件往來；設 M2K_DIRECTORY_FILE 通訊錄匯出檔可涵蓋全公司） |
 | 模糊群組名展開成員排會議（「約某某部門開會」） | MCP 工具：`find_group`（優先讀公司通訊錄的**正式部門群組**——CardDAV，用應用程式專用密碼即可；查無部門才退回你參與過的定期會議。多候選/名單要向使用者確認後再 book） |
