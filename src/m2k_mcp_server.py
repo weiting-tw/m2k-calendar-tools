@@ -130,9 +130,11 @@ def _cookie(ctx, force=False):
         return ""
 
 
-def _others_schedule(cookie, emails, s, e, ctx=None):
+def _others_schedule(cookie, emails, s, e, ctx=None, fetch=None):
     """逐一查同事行程。回 ({email: 事件清單 或 M2KError}, 被人數上限截掉的 email 清單)。
-    cookie 是自動換來的、中途過期時，用 ctx 重換一次再重試（貼上來的 cookie 不重換）。"""
+    cookie 是自動換來的、中途過期時，用 ctx 重換一次再重試（貼上來的 cookie 不重換）。
+    fetch 預設走排程端點；公用行事曆傳 m2kcal.fetch_public（emails 換成行事曆 id）。"""
+    fetch = fetch or m2kcal.fetch_schedule
     seen, todo = set(), []
     for em in emails:
         k = (em or "").strip().lower()
@@ -142,7 +144,7 @@ def _others_schedule(cookie, emails, s, e, ctx=None):
     out, relogged = {}, False
     for em in shown:
         try:
-            out[em] = m2kcal.fetch_schedule(cookie, em, s, e)
+            out[em] = fetch(cookie, em, s, e)
         except m2kcal.M2KError as err:
             # session 過期且是自動換來的 → 重換一次再試這人
             if ctx is not None and not relogged and "過期" in str(err):
@@ -151,7 +153,7 @@ def _others_schedule(cookie, emails, s, e, ctx=None):
                 if fresh.strip() and fresh != cookie:
                     cookie = fresh
                     try:
-                        out[em] = m2kcal.fetch_schedule(cookie, em, s, e); continue
+                        out[em] = fetch(cookie, em, s, e); continue
                     except m2kcal.M2KError as err2:
                         err = err2
             out[em] = err
@@ -1244,6 +1246,81 @@ def others_agenda(emails: list[str], start: str = "", days: int = 7,
     return head + "\n" + body + tail
 
 
+def _public_calendars(ctx):
+    """列公用行事曆，回 (cookie, 清單)；自動換來的 session 過期時重換一次。拿不到 session 丟 M2KError。"""
+    cookie = _cookie(ctx).strip()
+    if not cookie:
+        raise m2kcal.M2KError("查公用行事曆需要 webmail session，但用目前的帳密換不到（請確認帳密設定）。")
+    try:
+        return cookie, m2kcal.public_calendars(cookie)
+    except m2kcal.M2KError as err:
+        if ctx is None or "過期" not in str(err):
+            raise
+        fresh = _cookie(ctx, force=True).strip()
+        if not fresh or fresh == cookie:
+            raise
+        return fresh, m2kcal.public_calendars(fresh)
+
+
+def find_room_slots(rooms: list[str] | None = None, duration_minutes: int = 60,
+                    start: str = "", days: int = 7,
+                    day_start: str = "09:00", day_end: str = "18:00",
+                    include_weekends: bool = False, ctx: Context = None) -> str:
+    """查會議室（或公務車、設備等公用行事曆）的空檔，每間各自列出。
+    rooms 為名稱關鍵字清單，可只給部分名稱（如「大會議室」「3F」），名稱含該字的都會列出；
+    省略 rooms 則列出所有公用行事曆名稱。其餘參數同 find_free_slots。
+    會議室不是帳號，find_free_slots / others_agenda 查不到，要用這個工具。
+    只看會議室有沒有被預約、不含任何人的忙碌；要配合與會者時間，另用 find_free_slots 再交叉比對。"""
+    try:
+        cookie, cals = _public_calendars(ctx)
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+    if not cals:
+        return "你的帳號看不到任何公用行事曆。"
+    names = "\n".join("- " + c["name"] for c in cals)
+    if not any((r or "").strip() for r in rooms or []):
+        return f"公用行事曆共 {len(cals)} 本（rooms 帶名稱關鍵字查空檔）：\n{names}"
+    hits, missing = m2kcal.match_public(cals, rooms)
+    if not hits:
+        return f"找不到名稱含「{'、'.join(missing)}」的公用行事曆，可用的有：\n{names}"
+    try:
+        s = m2kcal.parse_when(start) if start else dt.datetime.now()
+        e = (s.replace(hour=0, minute=0, second=0, microsecond=0)
+             + dt.timedelta(days=days))
+    except m2kcal.M2KError as err:
+        return f"錯誤：{err}"
+
+    got, dropped = _others_schedule(cookie, [c["id"] for c in hits], s, e, ctx,
+                                    fetch=m2kcal.fetch_public)
+    name_of = {c["id"].lower(): c["name"] for c in hits}
+    wk = "一二三四五六日"
+    out = [f"{s:%Y-%m-%d} 起 {days} 天，工作時段 {day_start}–{day_end}，"
+           f"≥ {duration_minutes} 分鐘的空檔（只看預約，不含任何人的行程）："]
+    for cid, res in got.items():
+        out.append(f"\n🏢 {name_of[cid]}")
+        if isinstance(res, Exception):
+            out.append(f"   ⚠ 查不到：{res}")
+            continue
+        busy = m2kcal.busy_periods(res)
+        free = [(a, b) for a, b, busy_by in m2kfree.common_free_slots(
+            [cid], s, e, busy_source=lambda people, a, b: ({people[0]: busy}, {}),
+            duration_min=duration_minutes, day_start=day_start, day_end=day_end,
+            include_weekends=include_weekends)["slots"] if not busy_by]
+        if not free:
+            out.append(f"   （此期間沒有 ≥ {duration_minutes} 分鐘的空檔）")
+        cur = None
+        for a, b in sorted(free):
+            if a.date() != cur:
+                cur = a.date()
+                out.append(f"   📅 {cur.isoformat()} (週{wk[cur.weekday()]})")
+            out.append(f"      {a:%H:%M}–{b:%H:%M}（{int((b - a).total_seconds() // 60)} 分鐘）")
+    if missing:
+        out.append(f"\n⚠ 找不到名稱含「{'、'.join(missing)}」的公用行事曆（rooms 省略可列出全部名稱）")
+    if dropped:
+        out.append(f"\n⚠ 一次最多查 {m2kcal.MAX_SCHED_PEOPLE} 本，未查：" + "、".join(name_of[d] for d in dropped))
+    return "\n".join(out)
+
+
 def _register_calendar_app(server: "MCPServer") -> None:
     server.tool(meta={"ui": {"resourceUri": CAL_UI_URI}},
                 structured_output=True)(show_calendar)
@@ -1321,7 +1398,7 @@ def _register_prompts(server: "MCPServer") -> None:
 # host 每呼叫一次掛 UI 的工具就多開一個 app，排多人會議時模型會逐人查行程、
 # book 也可能為了確認名單送兩次，一路疊出好幾個 app。
 TOOLS = (list_calendars, search_events, find_free_slots, find_person, find_group,
-         get_event, list_invitations, others_agenda,
+         get_event, list_invitations, others_agenda, find_room_slots,
          agenda, list_events, book, update_event, respond_event, delete_event)
 
 

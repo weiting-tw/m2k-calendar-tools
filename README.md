@@ -117,6 +117,7 @@ python3 src/m2kgroup.py expand --abid <ABID> --dirid <DIRID> --as-attendees
   `find_free_slots`（找空檔；帶 `attendees` 會一併扣掉同事的忙碌時段：有 Cookie 查任何人，沒 Cookie 只算已分享者）、
   `find_group`（模糊群組名展開為與會者）、
   `others_agenda`（看同事行程，不必對方分享）、
+  `find_room_slots`（會議室、公務車、設備等公用行事曆的空檔；會議室不是帳號，上面兩個查不到）、
   `find_person`（模糊人名查 email）、
   `list_calendars`
 

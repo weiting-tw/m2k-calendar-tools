@@ -71,7 +71,8 @@ async def test_stdio(era):
         print(f"--- stdio [{era}]")
         tools = sorted(t.name for t in (await s.list_tools()).tools)
         assert tools == ["agenda", "book", "calendar_data", "delete_event",
-                         "find_free_slots", "find_group", "find_person", "get_event",
+                         "find_free_slots", "find_group", "find_person", "find_room_slots",
+                         "get_event",
                          "list_calendars", "list_events", "list_invitations",
                          "others_agenda", "respond_event", "search_events",
                          "show_calendar", "update_event"], tools

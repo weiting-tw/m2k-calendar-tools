@@ -2217,4 +2217,166 @@ if srv:
     check("沒設白名單 → 只放行本機（含 IPv6），同 SDK 綁本機時的預設",
           sorted(_ts.allowed_hosts) == ["127.0.0.1:*", "[::1]:*", "localhost:*"])
 
+# 32) 公用行事曆（會議室、設備）：不是帳號，排程端點查不到，要走 feeds/default/public/
+_ep = lambda *a: int(dt.datetime(*a, tzinfo=TW).timestamp())   # noqa: E731
+_pub_list = {"rspCode": 0, "calendars": [
+    {"id": "r1@example.com", "display_name": "3F 大會議室(10人)", "feeds": "public"},
+    {"id": "r2@example.com", "display_name": "3F 小會議室(4人)", "feeds": "public"},
+    {"id": "car1@example.com", "display_name": "公務車-01", "feeds": "public"},
+]}
+_pub_inst = {
+    "r1@example.com": [
+        {"dtstart": _ep(2026, 9, 21, 9), "dtend": _ep(2026, 9, 21, 10), "offset": "28800",
+         "summary": "週會", "organizer": "mailto:boss@example.com"},
+        {"dtstart": _ep(2026, 9, 21, 13), "dtend": _ep(2026, 9, 21, 15), "offset": "28800",
+         "summary": "客戶簡報", "organizer": "mailto:sales@example.com",
+         "attendee": [{"attendee": "mailto:a@example.com", "attendee_reply_status": 2}]},
+    ],
+    "r2@example.com": [],
+    "car1@example.com": [{"dstart": "2026/09/21", "dend": "2026/09/22", "summary": "出差"}],
+}
+_feeds_calls = []
+def _fake_feeds(cookie, path, params=None):
+    _feeds_calls.append((cookie, path, params))
+    if path == m2kcal.PUBLIC_FEEDS:
+        return 200, "application/json", _json_mod.dumps(_pub_list)
+    for cid, inst in _pub_inst.items():
+        if path == m2kcal.PUBLIC_FEEDS + cid + "/events/instances/":
+            return 200, "application/json", _json_mod.dumps({"rspCode": 0, "instances": inst})
+    return 200, "application/json", '{"rspCode":-102,"rspMsg":"","instances":null}'
+
+_saved_feeds = m2kcal._feeds_get
+m2kcal._feeds_get = _fake_feeds
+try:
+    _pc = m2kcal.public_calendars(" key=K ")
+    check("public_calendars 回 id 與名稱、保持伺服器順序",
+          _pc == [{"id": "r1@example.com", "name": "3F 大會議室(10人)"},
+                  {"id": "r2@example.com", "name": "3F 小會議室(4人)"},
+                  {"id": "car1@example.com", "name": "公務車-01"}])
+    check("public_calendars 打 feeds/default/public/ 並 strip cookie",
+          _feeds_calls[-1][:2] == ("key=K", m2kcal.PUBLIC_FEEDS))
+
+    _fp = m2kcal.fetch_public("key=K", "r1@example.com",
+                              dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22))
+    check("fetch_public 打該行事曆的 events/instances/，naive 時間視為台北換成 epoch",
+          _feeds_calls[-1][1] == m2kcal.PUBLIC_FEEDS + "r1@example.com/events/instances/"
+          and _feeds_calls[-1][2] == {"starttime": _ep(2026, 9, 21), "endtime": _ep(2026, 9, 22)})
+    check("fetch_public 解析時間與主旨（與排程端點同形狀）",
+          [(x["start"], x["end"], x["summary"]) for x in _fp]
+          == [(dt.datetime(2026, 9, 21, 9), dt.datetime(2026, 9, 21, 10), "週會"),
+              (dt.datetime(2026, 9, 21, 13), dt.datetime(2026, 9, 21, 15), "客戶簡報")])
+    check("fetch_public 每筆預約都算會議室忙碌（與會者拒絕不代表會議室空出來）",
+          all(x["busy"] for x in _fp))
+    _fc = m2kcal.fetch_public("key=K", "car1@example.com",
+                              dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22))
+    check("fetch_public 全天預約（dstart/dend）→ 整天忙碌",
+          len(_fc) == 1 and _fc[0]["allday"]
+          and m2kcal.busy_periods(_fc) == [(dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22))])
+
+    for _resp, _why in (((200, "application/json", '{"rspCode":-100,"rspMsg":"Invalid Session"}'), "rspCode -100"),
+                        ((410, "text/html", "<html>gone</html>"), "nginx 410/HTML")):
+        m2kcal._feeds_get = lambda c, p, params=None, _r=_resp: _r
+        for _call in (lambda: m2kcal.public_calendars("key=K"),
+                      lambda: m2kcal.fetch_public("key=K", "r1@example.com",
+                                                  dt.datetime(2026, 9, 21), dt.datetime(2026, 9, 22))):
+            try: _call(); _msg = ""
+            except m2kcal.M2KError as _err: _msg = str(_err)
+            check(f"公用行事曆 session 失效（{_why}）→ M2KError 且訊息含「過期」（呼叫端靠它重換）",
+                  "過期" in _msg)
+    m2kcal._feeds_get = _fake_feeds
+    try: m2kcal.public_calendars(""); _msg = ""
+    except m2kcal.M2KError as _err: _msg = str(_err)
+    check("public_calendars 沒 cookie → 說明怎麼提供", "Cookie" in _msg)
+finally:
+    m2kcal._feeds_get = _saved_feeds
+
+_mp, _miss = m2kcal.match_public(_pc, ["大會議室"])
+check("match_public 部分名稱 → 命中含該字的", [c["id"] for c in _mp] == ["r1@example.com"] and _miss == [])
+_mp, _miss = m2kcal.match_public(_pc, ["3f", "3F 小會議室(4人)", "CAR1@example.com", "不存在", " "])
+check("match_public 關鍵字命中多本、大小寫不敏感、去重保序、也可用 id",
+      [c["id"] for c in _mp] == ["r1@example.com", "r2@example.com", "car1@example.com"])
+check("match_public 沒命中的名稱回報出來（空白略過）", _miss == ["不存在"])
+_mp, _ = m2kcal.match_public(
+    [{"id": "x1@example.com", "name": "會議室A"}, {"id": "x2@example.com", "name": "會議室A-2"}], ["會議室A"])
+check("match_public 名稱完全相同時只取那一本，不連帶包含它的", [c["id"] for c in _mp] == ["x1@example.com"])
+
+if srv:
+    _saved_rs = (m2kcal._feeds_get, srv._cookie, m2kcal.connect, m2kcal.MAX_SCHED_PEOPLE)
+    _ck_calls = []
+    def _fake_cookie(ctx, force=False):
+        _ck_calls.append(force)
+        return "key=NEW" if force else "key=K"
+    _caldav_hits = []
+    def _no_caldav(*a, **k):
+        _caldav_hits.append(a)
+        raise m2kcal.M2KError("會議室空檔不該去查自己的 CalDAV")
+    m2kcal._feeds_get = _fake_feeds
+    srv._cookie = _fake_cookie
+    m2kcal.connect = _no_caldav
+    try:
+        _all = srv.find_room_slots()
+        check("find_room_slots 沒給 rooms → 列出所有公用行事曆名稱",
+              "3F 大會議室(10人)" in _all and "公務車-01" in _all and "3 本" in _all)
+
+        _rs = srv.find_room_slots(["3F", "不存在"], duration_minutes=60, start="2026-09-21", days=1)
+        _r1, _r2 = _rs.split("🏢 3F 小會議室(4人)")[0], _rs.split("🏢 3F 小會議室(4人)")[1]
+        check("find_room_slots 每間各自列空檔：大會議室扣掉 09–10、13–15",
+              "🏢 3F 大會議室(10人)" in _r1 and "10:00–13:00" in _r1 and "15:00–18:00" in _r1
+              and "\n      09:00–" not in _r1)
+        check("find_room_slots 沒預約的會議室整段都空", "09:00–18:00" in _r2)
+        check("find_room_slots 部分關鍵字沒命中 → 警告點名", "⚠" in _rs and "不存在" in _rs)
+        check("find_room_slots 不查自己的行事曆（只看會議室有沒有被訂）", _caldav_hits == [])
+
+        _none = srv.find_room_slots(["不存在"], start="2026-09-21", days=1)
+        check("find_room_slots 全部沒命中 → 說找不到並列出可用名稱",
+              "不存在" in _none and "3F 大會議室(10人)" in _none)
+
+        _short = srv.find_room_slots(["大會議室"], duration_minutes=240, start="2026-09-21", days=1)
+        check("find_room_slots 空檔都不夠長 → 明講沒有",
+              "🏢 3F 大會議室(10人)" in _short and "沒有" in _short and "–" not in _short.split("🏢")[1])
+
+        # 某一間查詢失敗：其他間照列，失敗的那間帶原因
+        _pub_list["calendars"].append({"id": "ghost@example.com", "display_name": "3F 幽靈室"})
+        _rg = srv.find_room_slots(["3F"], start="2026-09-21", days=1)
+        check("find_room_slots 某間查不到 → 帶原因、其他間照列",
+              "3F 幽靈室" in _rg and "查不到" in _rg and "10:00–13:00" in _rg)
+        _pub_list["calendars"].pop()
+
+        # 某一間連線逾時：只影響那一間，不能把整個結果換成非預期錯誤
+        import requests as _rq
+        def _feeds_timeout(cookie, path, params=None):
+            if "r2@example.com" in path:
+                raise _rq.exceptions.ReadTimeout("read timed out")
+            return _fake_feeds(cookie, path, params)
+        m2kcal._feeds_get = _feeds_timeout
+        _rt = srv.find_room_slots(["3F"], start="2026-09-21", days=1)
+        check("find_room_slots 某間連線逾時 → 那間帶原因、其他間照列",
+              "10:00–13:00" in _rt and "3F 小會議室(4人)\n   ⚠ 查不到" in _rt and "逾時" in _rt)
+        m2kcal._feeds_get = _fake_feeds
+
+        m2kcal.MAX_SCHED_PEOPLE = 1
+        _rd = srv.find_room_slots(["3F"], start="2026-09-21", days=1)
+        check("find_room_slots 超過一次查詢上限 → 用名稱點名哪些沒查",
+              "未查" in _rd and "3F 小會議室(4人)" in _rd.split("未查")[1])
+        m2kcal.MAX_SCHED_PEOPLE = _saved_rs[3]
+
+        # 列清單時 session 過期：重換一次再列
+        _expired = {"n": 0}
+        def _feeds_expire_once(cookie, path, params=None):
+            if cookie == "key=K":
+                _expired["n"] += 1
+                return 200, "application/json", '{"rspCode":-100,"rspMsg":"Invalid Session"}'
+            return _fake_feeds(cookie, path, params)
+        m2kcal._feeds_get = _feeds_expire_once
+        _ck_calls.clear()
+        _re = srv.find_room_slots(["大會議室"], start="2026-09-21", days=1, ctx=object())
+        check("find_room_slots session 過期 → 重換 cookie 一次後成功",
+              _ck_calls == [False, True] and "10:00–13:00" in _re)
+
+        srv._cookie = lambda ctx, force=False: ""
+        check("find_room_slots 拿不到 webmail session → 錯誤說明",
+              srv.find_room_slots(["3F"]).startswith("錯誤："))
+    finally:
+        m2kcal._feeds_get, srv._cookie, m2kcal.connect, m2kcal.MAX_SCHED_PEOPLE = _saved_rs
+
 print("\n全部通過 ✅")
